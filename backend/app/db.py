@@ -128,4 +128,4 @@ def init_db() -> None:
     plan_columns = {column["name"] for column in inspect(engine).get_columns("plans")}
     if "needs_review" not in plan_columns:
         with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE plans ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT 0"))
+            connection.execute(text("ALTER TABLE plans ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT FALSE"))
