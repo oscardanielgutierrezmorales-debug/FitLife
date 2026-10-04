@@ -1,4 +1,4 @@
-from .service import LocalLLM, LLMUnavailable
+from .service import LLMUnavailable, LocalLLM, VertexLLM
 
-__all__ = ["LocalLLM", "LLMUnavailable"]
+__all__ = ["LLMUnavailable", "LocalLLM", "VertexLLM"]
 
