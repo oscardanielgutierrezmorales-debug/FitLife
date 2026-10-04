@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ["DATABASE_URL"] = "sqlite:////tmp/fitlife-api-test.db"
 os.environ["VECTOR_DB_PATH"] = "/tmp/fitlife-api-vectors"
@@ -53,7 +54,11 @@ def test_unavailable_local_llm_is_explicit_not_a_generic_error(monkeypatch):
         assert client.post("/api/v1/plan/generate", headers=headers).status_code == 201
         response = client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué proteína recomiendas después de entrenar?"})
         assert response.status_code == 503
-        assert "asistente local" in response.json()["detail"]["message"]
+        assert response.json()["detail"]["message"] == "No pude completar la respuesta en este momento. Intenta nuevamente."
+
+        recovered = client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué me toca hoy?"})
+        assert recovered.status_code == 200
+        assert recovered.json()["metadata"]["vertex_called"] is False
 
 
 def test_recipe_requests_resolve_the_exact_plan_meal_and_current_meal_type():
@@ -79,6 +84,87 @@ def test_recipe_requests_resolve_the_exact_plan_meal_and_current_meal_type():
             response = client.post("/api/v1/chat", headers=headers, json={"message": question})
             assert response.status_code == 200, response.text
             assert expected["name"] in response.json()["message"]
+
+
+def test_selected_calendar_day_is_authoritative_for_deterministic_plan_questions(monkeypatch):
+    async def vertex_must_not_run(**_):
+        raise AssertionError("deterministic plan questions must not call the LLM")
+
+    monkeypatch.setattr("app.main.llm.answer", vertex_must_not_run)
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-selected-day")
+        assert client.put("/api/v1/profile", headers=headers, json=profile()).status_code == 200
+        plan = client.post("/api/v1/plan/generate", headers=headers).json()
+        workout_days = [day for day in plan["days"] if day["workout"]["exercises"]]
+        assert len(workout_days) >= 3
+
+        for selected in [workout_days[0], workout_days[1], workout_days[2], workout_days[1]]:
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "¿Qué ejercicio tengo que hacer?", "selected_plan_date": selected["date"]},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["intent"] == "plan_question"
+            assert response.json()["metadata"]["plan_day"] == selected["date"]
+            assert response.json()["metadata"]["context_source"] == "selected_plan_date"
+            assert selected["workout"]["type"] in response.json()["message"]
+            for exercise in selected["workout"]["exercises"]:
+                assert exercise["name"] in response.json()["message"]
+            assert response.json()["metadata"]["vertex_called"] is False
+
+        progress = client.post(
+            "/api/v1/chat",
+            headers=headers,
+            json={"message": "¿Qué día de mi rutina voy?", "selected_plan_date": workout_days[1]["date"]},
+        )
+        assert progress.status_code == 200, progress.text
+        assert progress.json()["intent"] == "progress_question"
+        assert progress.json()["metadata"]["plan_day"] == workout_days[1]["date"]
+        assert "día voy" not in progress.json()["message"].casefold()
+
+        # An explicit date wins over a conflicting calendar selection.
+        explicit = client.post(
+            "/api/v1/chat",
+            headers=headers,
+            json={"message": f"¿Qué ejercicio tengo el {workout_days[2]['date']}?", "selected_plan_date": workout_days[0]["date"]},
+        )
+        assert explicit.status_code == 200, explicit.text
+        assert explicit.json()["metadata"]["plan_day"] == workout_days[2]["date"]
+        assert explicit.json()["metadata"]["context_source"] == "explicit_date"
+
+        invalid = client.post(
+            "/api/v1/chat",
+            headers=headers,
+            json={"message": "¿Qué ejercicio tengo que hacer?", "selected_plan_date": "1999-01-01"},
+        )
+        assert invalid.status_code == 422
+
+
+def test_simultaneous_selected_dates_do_not_leak_between_requests_or_users(monkeypatch):
+    async def vertex_must_not_run(**_):
+        raise AssertionError("selected-day lookups must stay deterministic")
+
+    monkeypatch.setattr("app.main.llm.answer", vertex_must_not_run)
+    with TestClient(app) as client:
+        first, second = signup(client, "fitlife-concurrent-a"), signup(client, "fitlife-concurrent-b")
+        for headers in (first, second):
+            assert client.put("/api/v1/profile", headers=headers, json=profile()).status_code == 200
+        first_plan = client.post("/api/v1/plan/generate", headers=first).json()
+        second_plan = client.post("/api/v1/plan/generate", headers=second).json()
+        first_day = next(day for day in first_plan["days"] if day["workout"]["exercises"])
+        second_day = [day for day in second_plan["days"] if day["workout"]["exercises"]][1]
+
+        def ask(headers, selected):
+            return client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué ejercicio tengo que hacer?", "selected_plan_date": selected["date"]})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda args: ask(*args), [(first, first_day), (second, second_day)]))
+        for response, expected in zip(responses, (first_day, second_day)):
+            assert response.status_code == 200, response.text
+            assert response.json()["metadata"]["plan_day"] == expected["date"]
+            assert expected["workout"]["type"] in response.json()["message"]
+            assert response.headers["x-request-id"] == response.json()["request_id"]
 
 
 def test_long_answers_round_trip_without_truncation_and_twenty_turns_remain_ordered(monkeypatch):

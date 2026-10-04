@@ -14,7 +14,7 @@ function ChatContent({ value }) {
   })}</div>;
 }
 
-export function ChatWidget({ entries, onSend, loading }) {
+export function ChatWidget({ entries, onSend, loading, minimized = false, unread = 0, onMinimize, onRestore }) {
   const [message, setMessage] = useState("");
   const [showLatest, setShowLatest] = useState(false);
   const messagesRef = useRef(null);
@@ -32,10 +32,10 @@ export function ChatWidget({ entries, onSend, loading }) {
     const last = safeEntries[safeEntries.length - 1];
     const firstLoad = previousCountRef.current === 0;
     const userJustSent = last?.role === "user" && safeEntries.length > previousCountRef.current;
-    if (firstLoad || userJustSent || nearBottomRef.current) scrollToLatest(firstLoad ? "auto" : "smooth");
+    if (!minimized && (firstLoad || userJustSent || nearBottomRef.current)) scrollToLatest(firstLoad ? "auto" : "smooth");
     else if (safeEntries.length > previousCountRef.current) setShowLatest(true);
     previousCountRef.current = safeEntries.length;
-  }, [safeEntries.length, loading]);
+  }, [safeEntries.length, loading, minimized]);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return undefined;
@@ -67,5 +67,6 @@ export function ChatWidget({ entries, onSend, loading }) {
     void onSend(question);
   };
   const submit = (event) => { event.preventDefault(); send(); };
-  return <aside className="chat"><header><strong>FitLife AI</strong><small>Chat con tu equipo FitLife</small></header><div className="messages" ref={messagesRef} onScroll={handleScroll} aria-live="polite">{safeEntries.length === 0 && <p>Pregunta sobre tu plan, entrenamiento o nutrición.</p>}{safeEntries.map((entry) => <article key={entry.id} className={entry.role === "user" ? "user" : "assistant"}><strong>{entry.role === "user" ? "Tú" : "FitLife AI"}</strong><ChatContent value={entry.content} /></article>)}{loading && <article className="assistant pending"><strong>FitLife AI</strong><span>Estoy preparando la respuesta…</span></article>}</div>{showLatest && <button className="latest" type="button" onClick={() => scrollToLatest()}>↓ Mensaje más reciente</button>}<form className="compose" onSubmit={submit}><input value={message} disabled={loading} onChange={(e) => setMessage(e.target.value)} placeholder="Pregunta sobre tu plan…" aria-label="Mensaje para FitLife AI" /><button className="primary" type="submit" disabled={loading || !message.trim()}>Enviar</button></form></aside>;
+  if (minimized) return <button className="chat-launcher" type="button" onClick={onRestore} aria-label="Abrir chat" aria-expanded="false"><span>FitLife AI</span>{loading && <span className="launcher-status" aria-label="Preparando respuesta">…</span>}{unread > 0 && <span className="unread" aria-label={`${unread} respuesta nueva`}>{unread}</span>}<span aria-hidden="true">↑</span></button>;
+  return <aside className="chat"><header><div className="chat-title"><strong>FitLife AI</strong><small>Chat con tu equipo FitLife</small></div><button className="minimize-chat" type="button" onClick={onMinimize} aria-label="Minimizar chat" aria-expanded="true">—</button></header><div className="messages" ref={messagesRef} onScroll={handleScroll} aria-live="polite">{safeEntries.length === 0 && <p>Pregunta sobre tu plan, entrenamiento o nutrición.</p>}{safeEntries.map((entry) => <article key={entry.id} className={entry.role === "user" ? "user" : "assistant"}><strong>{entry.role === "user" ? "Tú" : "FitLife AI"}</strong><ChatContent value={entry.content} /></article>)}{loading && <article className="assistant pending"><strong>FitLife AI</strong><span>Estoy preparando la respuesta…</span></article>}</div>{showLatest && <button className="latest" type="button" onClick={() => scrollToLatest()}>↓ Mensaje más reciente</button>}<form className="compose" onSubmit={submit}><input value={message} disabled={loading} onChange={(e) => setMessage(e.target.value)} placeholder="Pregunta sobre tu plan…" aria-label="Mensaje para FitLife AI" /><button className="primary" type="submit" disabled={loading || !message.trim()}>Enviar</button></form></aside>;
 }

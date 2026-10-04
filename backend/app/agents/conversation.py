@@ -35,9 +35,13 @@ def classify_conversation_intent(message: str) -> ConversationIntent | None:
         text,
     ):
         return "contextual_followup"
-    if re.search(r"\b(en que dia voy|que entrenamiento sigue|cual es (mi )?(siguiente|proximo) entrenamiento|progreso|cuanto llevo)\b", text):
+    if re.search(r"\b(en que dia (de mi rutina )?voy|que dia de mi rutina voy|que entrenamiento sigue|cual es (mi )?(siguiente|proximo) entrenamiento|progreso|cuanto(s)? dias? llevo)\b", text):
         return "progress_question"
-    if re.search(r"\b(que me toca (hoy|ahora)|que ejercicio tengo (hoy|ahora)|que comida me toca|que tengo que hacer hoy)\b", text):
+    if re.search(
+        r"\b(que me toca (hoy|ahora|este dia)|que (ejercicio|ejercicios|entrenamiento) (tengo que hacer|tengo|debo hacer|me toca)( .+)?|"
+        r"que comida (tengo|me toca)( .+)?|que tengo que hacer( .+)?|que tengo el \d{1,2} de \w+|que dia (estoy viendo|tengo seleccionado|estoy revisando))\b",
+        text,
+    ):
         return "plan_question"
     return None
 

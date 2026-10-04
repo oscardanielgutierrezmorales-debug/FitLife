@@ -11,10 +11,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.2:3b"
     llm_timeout_seconds: int = 45
+    vertex_model: str = "gemini-3.5-flash"
+    vertex_thinking_budget: int = 0
     vector_db_path: str = "/tmp/fitlife-vectors"
     cors_origins: str = "http://localhost:5180"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()
-

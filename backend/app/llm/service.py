@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import httpx
 import logging
 from google import genai
@@ -70,18 +71,22 @@ class VertexLLM:
             project="fitlife-510604",
             location="global",
         )
-        self.model = "gemini-3.5-flash"
+        self.model = settings.vertex_model
 
     async def answer(self, *, system: str, user: str) -> str:
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=user,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    temperature=0.3,
-                    max_output_tokens=MAX_OUTPUT_TOKENS,
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=user,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=0.3,
+                        max_output_tokens=MAX_OUTPUT_TOKENS,
+                        thinking_config=types.ThinkingConfig(thinking_budget=settings.vertex_thinking_budget, include_thoughts=False),
+                    ),
                 ),
+                timeout=settings.llm_timeout_seconds,
             )
 
             content = (response.text or "").strip()

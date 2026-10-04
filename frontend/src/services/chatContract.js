@@ -15,3 +15,11 @@ export function parseChatResponse(payload) {
   if (Number.isInteger(payload?.message_length) && payload.message_length !== [...message].length) throw new Error("La respuesta llegó incompleta. Inténtalo de nuevo.");
   return { message, sessionId: typeof payload.session_id === "string" ? payload.session_id : null };
 }
+
+export function chatRequestPayload(message, sessionId, selectedPlanDate) {
+  return {
+    message,
+    session_id: sessionId || null,
+    selected_plan_date: selectedPlanDate || null,
+  };
+}

@@ -131,7 +131,11 @@ def test_contextual_and_plan_turns_are_routed_before_entity_extraction():
     assert classify_conversation_intent("¿En qué nos quedamos?") == "contextual_followup"
     assert classify_conversation_intent("¿Cuál fue el último ejercicio por el que te pregunté?") == "contextual_followup"
     assert classify_conversation_intent("¿Qué me toca hoy?") == "plan_question"
+    assert classify_conversation_intent("¿Qué ejercicio tengo que hacer?") == "plan_question"
+    assert classify_conversation_intent("¿Qué día estoy viendo?") == "plan_question"
+    assert classify_conversation_intent("¿Qué tengo el 6 de octubre?") == "plan_question"
     assert classify_conversation_intent("¿En qué día voy?") == "progress_question"
+    assert classify_conversation_intent("¿Qué día de mi rutina voy?") == "progress_question"
     assert classify_conversation_intent("¿Cuál fue el último ejercicio que hice?") == "progress_question"
     assert asks_last_completed_exercise("¿Cuál fue el último ejercicio que hice?")
     assert classify_conversation_intent("¿Cómo hago la flexión inclinada?") is None
