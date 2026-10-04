@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import httpx
+import logging
 from google import genai
 from google.genai import types
 
 from app.config import settings
+
+
+logger = logging.getLogger("fitlife.llm")
+MAX_OUTPUT_TOKENS = 1200
 
 
 class LLMUnavailable(RuntimeError):
@@ -24,6 +29,7 @@ class LocalLLM:
                     json={
                         "model": settings.llm_model,
                         "stream": False,
+                        "options": {"num_predict": MAX_OUTPUT_TOKENS},
                         "messages": [
                             {"role": "system", "content": system},
                             {"role": "user", "content": user},
@@ -32,8 +38,9 @@ class LocalLLM:
                 )
                 response.raise_for_status()
 
+                payload = response.json()
                 content = (
-                    response.json()
+                    payload
                     .get("message", {})
                     .get("content", "")
                     .strip()
@@ -42,6 +49,12 @@ class LocalLLM:
                 if not content:
                     raise ValueError("empty Ollama response")
 
+                logger.info(
+                    "llm_completed provider=ollama model=%s finish_reason=%s output_chars=%s",
+                    settings.llm_model,
+                    payload.get("done_reason", "unknown"),
+                    len(content),
+                )
                 return content
 
         except (httpx.HTTPError, ValueError) as exc:
@@ -67,7 +80,7 @@ class VertexLLM:
                 config=types.GenerateContentConfig(
                     system_instruction=system,
                     temperature=0.3,
-                    max_output_tokens=800,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
                 ),
             )
 
@@ -76,8 +89,15 @@ class VertexLLM:
             if not content:
                 raise ValueError("empty Vertex AI response")
 
+            candidate = response.candidates[0] if getattr(response, "candidates", None) else None
+            finish_reason = getattr(candidate, "finish_reason", "unknown")
+            logger.info(
+                "llm_completed provider=vertex model=%s finish_reason=%s output_chars=%s",
+                self.model,
+                finish_reason,
+                len(content),
+            )
             return content
 
         except Exception as exc:
             raise LLMUnavailable(str(exc)) from exc
-        

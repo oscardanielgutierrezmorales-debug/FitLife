@@ -17,5 +17,6 @@ export async function api(path, { method = "GET", token, body } = {}) {
     throw error;
   }
   if (!data || typeof data !== "object") throw new Error("FitLife devolvió una respuesta no válida. Inténtalo de nuevo.");
+  if (import.meta.env.DEV && typeof data.message === "string") console.debug("[FitLife chat] caracteres recibidos por API:", [...data.message].length);
   return data;
 }

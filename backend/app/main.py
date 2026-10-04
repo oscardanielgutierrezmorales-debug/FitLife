@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .agents.conversation import asks_last_completed_exercise, classify_conversation_intent, contextual_focus
 from .agents.fitness import exercise_response, extract_exercise_entity, find_exercise, find_exercise_in_user_plan
-from .agents.nutrition import nutrition_context, plan_nutrition_response
+from .agents.nutrition import nutrition_context, plan_nutrition_answer
 from .agents.planner import generate_plan
 from .agents.router import route
 from .config import settings
@@ -363,9 +363,13 @@ async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[
             })
         return ChatAnswer(exercise_response(lookup), source, metadata)
     if intent in {"PLAN", "NUTRITION"}:
-        exact = plan_nutrition_response(question, {"payload": day.payload}, [{"payload": item.payload} for item in days], history)
+        exact = plan_nutrition_answer(question, {"payload": day.payload}, [{"payload": item.payload} for item in days], history, retriever)
         if exact:
-            return ChatAnswer(exact, "plan", {"date": day.date, "meal": next((meal["name"] for meal in day.payload["nutrition"]["meals"] if meal["name"].casefold() in exact.casefold()), None)})
+            return ChatAnswer(
+                exact.message,
+                "plan_rag" if exact.knowledge else "plan",
+                {"date": exact.day["date"], "meal": exact.meal["name"], "technical_guide_found": bool(exact.knowledge)},
+            )
     if intent == "PLAN":
         return ChatAnswer(_plan_summary(day), "plan", {"date": day.date})
     source = nutrition_context(question, retriever) if intent == "NUTRITION" else ""
@@ -581,11 +585,12 @@ async def chat(payload: ChatPayload, user: Annotated[User, Depends(current_user)
         _remember(db, user_id=user.id, plan=plan, result=result)
     db.commit()
     logger.info(
-        "chat_completed user_id=%s session_id=%s intent=%s source=%s exercise_intent=%s routine_found=%s technical_guide_found=%s",
+        "chat_completed user_id=%s session_id=%s intent=%s source=%s generated_chars=%s api_chars=%s exercise_intent=%s routine_found=%s technical_guide_found=%s",
         user.id, session.id, decision.intent, source,
+        len(result.message), len(answer),
         result.metadata.get("exercise_intent"), result.metadata.get("routine_found"), result.metadata.get("technical_guide_found"),
     )
-    return {"session_id": session.id, "intent": decision.intent, "source": source, "metadata": result.metadata, "message": answer, "response": answer}
+    return {"session_id": session.id, "intent": decision.intent, "source": source, "metadata": result.metadata, "message": answer, "response": answer, "message_length": len(answer)}
 
 
 @app.get("/api/v1/chat/{session_id}")
@@ -595,4 +600,4 @@ def chat_history(session_id: str, user: Annotated[User, Depends(current_user)], 
     if not session or session.user_id != user.id:
         raise HTTPException(status_code=404, detail="La sesión no existe.")
     messages = list(db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at)))
-    return {"session_id": session.id, "messages": [{"role": message.role, "content": message.content, "intent": message.intent} for message in messages]}
+    return {"session_id": session.id, "messages": [{"id": message.id, "role": message.role, "content": message.content, "intent": message.intent} for message in messages]}

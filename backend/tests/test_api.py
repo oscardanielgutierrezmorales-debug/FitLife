@@ -56,6 +56,61 @@ def test_unavailable_local_llm_is_explicit_not_a_generic_error(monkeypatch):
         assert "asistente local" in response.json()["detail"]["message"]
 
 
+def test_recipe_requests_resolve_the_exact_plan_meal_and_current_meal_type():
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-recipes")
+        assert client.put("/api/v1/profile", headers=headers, json=profile()).status_code == 200
+        plan = client.post("/api/v1/plan/generate", headers=headers).json()
+
+        exact = client.post("/api/v1/chat", headers=headers, json={"message": "Dame la receta de la ensalada de garbanzos"})
+        assert exact.status_code == 200, exact.text
+        assert "Ensalada de garbanzo" in exact.json()["message"]
+        assert "Sopa de lentejas" not in exact.json()["message"]
+        assert exact.json()["metadata"]["meal"].startswith("Ensalada de garbanzo")
+
+        current_lunch = next(meal for meal in plan["days"][0]["nutrition"]["meals"] if meal["meal_type"] == "Comida")
+        generic = client.post("/api/v1/chat", headers=headers, json={"message": "Dame una receta para cocinar mi comida"})
+        assert generic.status_code == 200, generic.text
+        assert current_lunch["name"] in generic.json()["message"]
+        assert generic.json()["metadata"]["meal"] == current_lunch["name"]
+
+        for meal_type, question in [("Desayuno", "¿Cómo preparo mi desayuno?"), ("Cena", "¿Cómo preparo mi cena?")]:
+            expected = next(meal for meal in plan["days"][0]["nutrition"]["meals"] if meal["meal_type"] == meal_type)
+            response = client.post("/api/v1/chat", headers=headers, json={"message": question})
+            assert response.status_code == 200, response.text
+            assert expected["name"] in response.json()["message"]
+
+
+def test_long_answers_round_trip_without_truncation_and_twenty_turns_remain_ordered(monkeypatch):
+    long_answer = "Respuesta extensa: " + ("contenido completo. " * 190)
+
+    async def answer(**_):
+        return long_answer
+
+    monkeypatch.setattr("app.main.llm.answer", answer)
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-long-chat")
+        assert client.put("/api/v1/profile", headers=headers, json=profile()).status_code == 200
+        assert client.post("/api/v1/plan/generate", headers=headers).status_code == 201
+        response = client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué proteína recomiendas después de entrenar?"})
+        assert response.status_code == 200, response.text
+        assert response.json()["message"] == long_answer
+        assert response.json()["message_length"] == len(long_answer)
+        session_id = response.json()["session_id"]
+
+        for index in range(19):
+            turn = client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué me toca hoy?", "session_id": session_id})
+            assert turn.status_code == 200, f"turn {index + 2}: {turn.text}"
+
+        history = client.get(f"/api/v1/chat/{session_id}", headers=headers)
+        assert history.status_code == 200
+        messages = history.json()["messages"]
+        assert len(messages) == 40
+        assert messages[1]["content"] == long_answer
+        assert all(message["id"] for message in messages)
+        assert [message["role"] for message in messages] == [role for _ in range(20) for role in ("user", "assistant")]
+
+
 def test_chat_returns_stable_contract_and_combines_real_plan_with_technical_exercise_knowledge(monkeypatch):
     async def should_not_run(**_):
         raise AssertionError("an off-topic request must not reach the LLM")
