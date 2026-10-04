@@ -1,0 +1,8 @@
+[
+  {"id":"exercise-band-row","kind":"exercise","name":"Remo con banda","aliases":["remo banda","band row"],"text":"Ancla una banda a la altura del torso, mantén columna neutra, lleva los codos hacia atrás y acerca los omóplatos sin encoger hombros."},
+  {"id":"exercise-incline-pushup","kind":"exercise","name":"Flexión inclinada","aliases":["flexion inclinada","push up inclinada"],"text":"Apoya las manos en una superficie estable, alinea cabeza, tronco y talones, baja con control y empuja sin bloquear los hombros."},
+  {"id":"exercise-dumbbell-press","kind":"exercise","name":"Press de pecho con mancuernas","aliases":["press con mancuernas","press pecho"],"text":"Túmbate con pies firmes, baja las mancuernas con control a los lados del pecho y presiónalas arriba manteniendo muñecas neutras."},
+  {"id":"nutrition-protein","kind":"nutrition","name":"Proteínas para recuperación","aliases":["proteina","proteínas","post entrenamiento"],"text":"Después de entrenar, una opción práctica combina proteína y carbohidrato: yogur natural con fruta, huevo con tortilla, pollo con arroz o legumbres con cereal. Ajusta cantidades a tu plan y restricciones."},
+  {"id":"nutrition-roasted-potato","kind":"nutrition","name":"Papa al horno","aliases":["papa horno","papas al horno"],"text":"Lava y corta la papa, mézclala con una pequeña cantidad de aceite y especias, hornea a 200 °C hasta que esté suave por dentro y dorada por fuera; acompáñala con proteína y verduras."},
+  {"id":"nutrition-chickpea-salad","kind":"nutrition","name":"Ensalada de garbanzo","aliases":["ensalada garbanzo","garbanzos"],"text":"Mezcla garbanzos cocidos, verduras picadas, limón, aceite de oliva y hierbas. Añade papa cocida o un cereal si tu comida del plan lo incluye."}
+]

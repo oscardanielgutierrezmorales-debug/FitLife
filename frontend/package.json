@@ -1,0 +1,9 @@
+{
+  "name": "fitlife-ai-frontend",
+  "private": true,
+  "version": "1.2.4",
+  "type": "module",
+  "scripts": { "dev": "vite", "build": "vite build", "test": "node --test src/validation/profileRules.test.js src/services/profileContract.test.js src/services/chatContract.test.js" },
+  "dependencies": { "@vitejs/plugin-react": "latest", "vite": "latest", "react": "latest", "react-dom": "latest" },
+  "devDependencies": {}
+}

@@ -1,0 +1,2 @@
+const days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+export function DaysSelector({ value, onChange, error }) { return <fieldset className={error ? "invalid" : ""}><legend>Días disponibles</legend><div className="days">{days.map((day, index) => <label key={day}><input type="checkbox" checked={value.includes(index)} onChange={() => onChange(value.includes(index) ? value.filter((item) => item !== index) : [...value, index].sort())} />{day}</label>)}</div>{error && <small className="field-error">{error}</small>}</fieldset>; }

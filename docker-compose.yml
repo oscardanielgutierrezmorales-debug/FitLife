@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fitlife
+      POSTGRES_USER: fitlife
+      POSTGRES_PASSWORD: fitlife
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fitlife -d fitlife"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - fitlife-postgres:/var/lib/postgresql/data
+
+  ollama:
+    image: ollama/ollama:0.34.0
+    volumes:
+      - fitlife-ollama:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama:0.34.0
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-llama3.2:3b}
+    depends_on:
+      - ollama
+    entrypoint: ["/bin/sh", "-c", "until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull $$LLM_MODEL"]
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fitlife:fitlife@postgres:5432/fitlife}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434}
+      LLM_MODEL: ${LLM_MODEL:-llama3.2:3b}
+      VECTOR_DB_PATH: ${VECTOR_DB_PATH:-/data/vectors}
+      JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
+      JWT_EXPIRES_MINUTES: ${JWT_EXPIRES_MINUTES:-10080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5180}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    ports:
+      - "8010:8000"
+    volumes:
+      - fitlife-vectors:/data/vectors
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8010/api/v1}
+    depends_on:
+      - backend
+    ports:
+      - "5180:5173"
+
+volumes:
+  fitlife-postgres:
+  fitlife-ollama:
+  fitlife-vectors:

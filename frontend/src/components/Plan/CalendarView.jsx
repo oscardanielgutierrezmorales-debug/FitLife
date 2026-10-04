@@ -1,0 +1,2 @@
+export function CalendarView({ days, selectedDate, onSelect, completed }) { return <div className="calendar">{days.map((day) => <button key={day.date} onClick={() => onSelect(day.date)} className={`${selectedDate === day.date ? "selected" : ""} ${completed.includes(day.date) ? "done" : ""}`}><small>{day.date.slice(5)}</small><strong>{day.title}</strong><span>{day.kind === "workout" ? "●" : day.kind === "recovery" ? "◐" : "○"}</span></button>)}</div>; }
+
