@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://fitlife:fitlife@localhost:5434/fitlife"
     jwt_secret: str = "development-only-change-me"
     jwt_expires_minutes: int = 10080
+    llm_provider: str = "ollama"
     llm_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.2:3b"
     llm_timeout_seconds: int = 45

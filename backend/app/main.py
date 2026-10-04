@@ -25,7 +25,7 @@ from .config import settings
 from .db import ChatMessage, ChatSession, Plan, PlanDay, Profile, Progress, SessionLocal, User, UserMemory, init_db
 from .guardrails import evaluate_input, validate_output
 from .guardrails.input_guardrail import GuardrailDecision
-from .llm import LLMUnavailable, LocalLLM
+from .llm import LLMUnavailable, LocalLLM, VertexLLM
 from .rag import LocalRetriever
 from .security import hash_password, issue_token, read_token, verify_password
 from .validation import ProfileValidationError, validate_profile_data
@@ -35,7 +35,7 @@ logger = logging.getLogger("fitlife")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 bearer = HTTPBearer(auto_error=False)
 retriever = LocalRetriever(settings.vector_db_path)
-llm = LocalLLM()
+llm = VertexLLM() if settings.llm_provider.casefold() == "vertex" else LocalLLM()
 
 
 class Credentials(BaseModel):
