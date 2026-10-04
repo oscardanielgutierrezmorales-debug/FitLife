@@ -53,6 +53,7 @@ def test_profile_rules_normalize_supported_legacy_values():
         ("weight_kg", 24, "25 y 400"),
         ("workout_hours_per_week", 0, "al menos 1"),
         ("workout_hours_per_week", 29, "máximo 28 hrs/semana"),
+        ("workout_hours_per_week", 1.05, "incrementos de 0.1"),
         ("goal", "extreme_cut", "objetivos"),
         ("dietary_restrictions", ["dieta inventada"], "no son compatibles"),
         ("available_days", [], "al menos un día"),
@@ -68,6 +69,33 @@ def test_profile_rules_reject_each_unsafe_or_invalid_field(field, value, message
 def test_profile_rules_reject_hours_that_do_not_fit_available_days():
     with pytest.raises(ProfileValidationError, match="máximo seguro es 6 hrs/semana"):
         validate_profile_data(valid_profile(workout_hours_per_week=7, available_days=[1]))
+
+
+@pytest.mark.parametrize("hours", [1, 1.1, 1.5, 2, 28])
+def test_profile_rules_accept_canonical_hour_boundaries(hours):
+    days = list(range(7)) if hours > 6 else [0]
+    assert validate_profile_data(valid_profile(workout_hours_per_week=hours, available_days=days))["workout_hours_per_week"] == hours
+
+
+def test_decimal_hours_profile_generates_without_exceeding_weekly_capacity():
+    raw_profile = valid_profile(
+        sex="female", age=30, height_cm=150, weight_kg=70,
+        workout_hours_per_week=1.1, available_days=[0], dietary_restrictions=[],
+    )
+    decimal_profile = validate_profile_data(raw_profile)
+    plan = generate_plan(decimal_profile)
+    weekly_minutes = {
+        week: sum(day["workout"]["duration_minutes"] for day in plan if day["week"] == week and day["kind"] == "workout")
+        for week in range(1, 5)
+    }
+    assert max(weekly_minutes.values()) <= 66
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        token_headers = {"Authorization": headers["Authorization"]}
+        saved = client.put("/api/v1/profile", headers=token_headers, json=raw_profile)
+        assert saved.status_code == 200, saved.text
+        generated = client.post("/api/v1/plan/generate", headers=token_headers)
+        assert generated.status_code == 201, generated.text
 
 
 def test_direct_api_validation_returns_specific_error_and_preserves_saved_profile():

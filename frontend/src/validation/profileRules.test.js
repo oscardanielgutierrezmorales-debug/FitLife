@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeRestrictions, validateProfile } from "./profileRules.js";
+import { normalizeRestrictions, parseLocalizedNumber, validateProfile } from "./profileRules.js";
 
 const valid = (changes = {}) => ({
   language: "es", sex: "female", age: 32, height_cm: 167, weight_kg: 72,
@@ -26,4 +26,13 @@ test("rechaza rangos, enums, duplicados y disponibilidad incompatible", () => {
   assert.match(validateProfile(valid({ sex: "custom" })).sex, /opciones/);
   assert.match(validateProfile(valid({ available_days: [0, 0] })).available_days, /No repitas/);
   assert.match(validateProfile(valid({ workout_hours_per_week: 7, available_days: [1] })).workout_hours_per_week, /máximo seguro es 6/);
+});
+
+test("acepta horas decimales en incrementos de 0.1 y normaliza coma", () => {
+  for (const hours of [1, 1.1, 1.5, 2, 28]) {
+    const days = hours > 6 ? [0, 1, 2, 3, 4, 5, 6] : [0];
+    assert.equal(validateProfile(valid({ workout_hours_per_week: hours, available_days: days })).workout_hours_per_week, undefined);
+  }
+  assert.match(validateProfile(valid({ workout_hours_per_week: 1.05, available_days: [0] })).workout_hours_per_week, /incrementos de 0.1/);
+  assert.equal(parseLocalizedNumber("1,5"), 1.5);
 });

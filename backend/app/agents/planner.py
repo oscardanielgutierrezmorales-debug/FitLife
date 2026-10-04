@@ -119,6 +119,7 @@ def generate_plan(profile: dict[str, Any], start: date | None = None) -> list[di
     daily_target = _daily_calorie_target(profile)
     focus = _goal_focus(profile["goal"])
     duration = max(30, min(75, round(hours * 60 / max(1, sessions) / 5) * 5))
+    max_progressive_duration = max(1, int(hours * 60 / max(1, sessions)))
     days: list[dict[str, Any]] = []
     training_number = 0
     for index in range(28):
@@ -130,7 +131,8 @@ def generate_plan(profile: dict[str, Any], start: date | None = None) -> list[di
             # block remains reachable with any choice of available weekdays.
             title, raw_exercises = EXERCISE_BLOCKS[training_number % len(EXERCISE_BLOCKS)]
             exercises = [{"name": name, "sets": sets + (1 if week == 3 else 0), "repetitions": reps if week != 4 else f"{reps}, técnica controlada", "rest_seconds": 90 if "Torso" in title else 75, "instructions": "Mantén técnica controlada y detente si aparece dolor agudo."} for name, sets, reps in raw_exercises]
-            workout = {"type": title, "focus": focus, "duration_minutes": duration + (5 if week == 3 else 0), "warmup": ["3 min de caminata suave", "Movilidad dinámica", "Serie de práctica"], "exercises": exercises, "recovery": "5–7 min de respiración y estiramientos suaves."}
+            progressive_duration = min(duration + (5 if week == 3 else 0), max_progressive_duration)
+            workout = {"type": title, "focus": focus, "duration_minutes": progressive_duration, "warmup": ["3 min de caminata suave", "Movilidad dinámica", "Serie de práctica"], "exercises": exercises, "recovery": "5–7 min de respiración y estiramientos suaves."}
             kind = "workout"
             training_number += 1
         else:

@@ -10,6 +10,7 @@ ConversationIntent = Literal[
     "SMALL_TALK", "APP_HELP", "PROFILE_QUERY", "PROFILE_SUMMARY", "PROFILE_REVIEW",
     "PLAN_SUMMARY", "ROUTINE_SUMMARY", "NUTRITION_SUMMARY", "PROGRESS_SUMMARY",
     "USER_QUERY", "PLAN_AUDIT", "PLAN_CONSTRAINT_CONFLICT",
+    "GENERAL_FITNESS_QUERY", "GENERAL_NUTRITION_QUERY",
 ]
 ContextFocus = Literal["exercise", "meal", "overview"]
 
@@ -29,6 +30,8 @@ def classify_conversation_intent(message: str) -> ConversationIntent | None:
         return "SMALL_TALK"
     if re.search(r"\b(que puedes hacer|en que me puedes ayudar|para que sirve fitlife|como funciona (fitlife|mi plan)|puedes (ayudarme|revisar|modificar)|que funciones tienes)\b", text):
         return "APP_HELP"
+    if re.search(r"\b(es|eso es|tambien es|forma) parte (de|del) (mi |el )?(perfil|objetivo|plan|rutina)|\bme refiero a (mi |el )?(perfil|objetivo|plan|rutina)\b", text):
+        return "contextual_followup"
     if re.search(r"\b(como me llamo|cual es mi nombre|que nombre tengo|quien soy)\b", text):
         return "USER_QUERY"
     if re.search(r"\b(me estas poniendo|mi plan (tiene|incluye)|estas incluyendo|aparece).*(lacte|lactosa|gluten|nueces|frutos secos|carne|pollo|huevo)|\b(soy|tengo).*(sin lactosa|sin lacteos|vegano|vegana|vegetariano|vegetariana|sin gluten)\b", text):
@@ -49,6 +52,16 @@ def classify_conversation_intent(message: str) -> ConversationIntent | None:
         return "NUTRITION_SUMMARY"
     if re.search(r"\b(como voy|resume mi progreso|como voy con mi plan|que he completado|cuanto llevo)\b|\by como voy\b", text):
         return "PROGRESS_SUMMARY"
+    if re.search(
+        r"\b(proteina|alimentos|alimentacion|comer|comida|antes de entrenar)\b|\bhidrata\w*\b",
+        text,
+    ) and re.search(r"\b(que|como|cuales|para que|por que|puedo|deberia|necesito|sirve|tienen)\b", text) and not re.search(r"\b(recomienda|recomiendas|recomendacion)\b", text):
+        return "GENERAL_NUTRITION_QUERY"
+    if (
+        re.search(r"\b(resistencia|fuerza|condicion fisica|acondicionamiento|movilidad|recuperacion|progresion|serie|series|3x10)\b", text)
+        or re.search(r"\bcuantos dias (deberia )?entrenar\b", text)
+    ) and re.search(r"\b(que|como|cuanto|cuantos|para que|por que|diferencia|significa|mejor|tarda|tiempo|deberia|necesito|sirve)\b", text):
+        return "GENERAL_FITNESS_QUERY"
     # Progress questions are evaluated first: they refer to completed plan
     # state, not to the last subject discussed with the assistant.
     if re.search(

@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .agents.conversation import asks_last_completed_exercise, classify_conversation_intent, contextual_focus
@@ -33,7 +34,13 @@ from .llm import LLMUnavailable, LocalLLM, VertexLLM
 from .rag import LocalRetriever
 from .security import hash_password, issue_token, read_token, verify_password
 from .user_context import UserContext, get_user_context
-from .validation import ProfileValidationError, validate_plan_against_profile, validate_profile_data
+from .validation import (
+    AuthValidationError,
+    ProfileValidationError,
+    validate_credentials,
+    validate_plan_against_profile,
+    validate_profile_data,
+)
 
 
 logger = logging.getLogger("fitlife")
@@ -45,8 +52,11 @@ PLAN_AFFECTING_PROFILE_FIELDS = {"sex", "age", "height_cm", "weight_kg", "workou
 
 
 class Credentials(BaseModel):
-    username: str = Field(min_length=3, max_length=80, pattern=r"^[A-Za-z0-9._-]+$")
-    password: str = Field(min_length=12, max_length=128)
+    # Deliberately permissive at the transport boundary. The domain validator
+    # below returns stable, localized field errors instead of Pydantic's
+    # generic list response.
+    username: Any = None
+    password: Any = None
 
 
 class ChatPayload(BaseModel):
@@ -412,6 +422,8 @@ def _remember(db: Session, *, user_id: str, plan: Plan | None, result: ChatAnswe
             "NUTRITION_SUMMARY": "el resumen de tu alimentación", "PROGRESS_SUMMARY": "tu progreso",
             "PLAN_AUDIT": "la validación de tu plan", "PLAN_CONSTRAINT_CONFLICT": "una restricción de tu perfil",
         }.get(str(intent), memory.last_topic)
+    if intent in {"GENERAL_FITNESS_QUERY", "GENERAL_NUTRITION_QUERY"}:
+        memory.last_topic = "una consulta general de fitness relacionada con tu perfil" if intent == "GENERAL_FITNESS_QUERY" else "una consulta general de nutrición relacionada con tus restricciones"
 
 
 def _history(db: Session, session_id: str) -> list[str]:
@@ -463,6 +475,60 @@ def _app_help_answer() -> ChatAnswer:
         "Puedo consultar tu perfil y plan reales, resumir tu rutina, comidas y progreso, explicar ejercicios y recetas, y detectar incompatibilidades entre tu perfil y el plan. Los cambios de perfil se confirman desde **Mi perfil**.",
         "app",
         {"conversation_intent": "APP_HELP", "vertex_called": False},
+    )
+
+
+def _personal_context_note(context: UserContext) -> str:
+    goal = GOAL_LABELS.get(context.profile.goal, context.profile.goal)
+    if context.plan and context.days:
+        weekly_sessions = sum(day.kind == "workout" for day in context.days) / 4
+        return f"En tu perfil, el objetivo es **{goal}** y tu plan distribuye aproximadamente **{weekly_sessions:g} sesiones por semana**."
+    return f"En tu perfil, el objetivo registrado es **{goal}**. Aún no tienes un plan activo para revisar su frecuencia."
+
+
+def _general_fitness_answer(question: str, context: UserContext) -> ChatAnswer:
+    text = _fold(question)
+    if "3x10" in text:
+        guidance = "**3x10** significa 3 series de 10 repeticiones. Completa 10 repeticiones, descansa el tiempo indicado y repite hasta terminar tres series."
+    elif "serie" in text and any(term in text for term in ("que es", "significa")):
+        guidance = "Una **serie** es un grupo de repeticiones realizadas de forma continua antes de descansar."
+    elif "recuper" in text or "descanso" in text:
+        guidance = "Los días de recuperación permiten reducir fatiga, adaptar músculos y articulaciones y mantener una técnica segura. Recuperar no significa dejar de progresar: es parte del entrenamiento."
+    elif "diferencia" in text and "fuerza" in text and "resistencia" in text:
+        guidance = "La **fuerza** prioriza producir tensión frente a una carga; la **resistencia** prioriza sostener un esfuerzo durante más tiempo. Un plan de condición general suele trabajar ambas capacidades."
+    elif "cuantos dias" in text or "cuantos dias deberia" in text:
+        guidance = "La frecuencia adecuada depende del punto de partida, intensidad y recuperación. Para muchas personas conviene alternar sesiones y descanso, pero tu disponibilidad y respuesta al esfuerzo determinan el ajuste."
+    elif any(term in text for term in ("tiempo", "tarda", "cuanto")) and any(term in text for term in ("resistencia", "fuerza", "condicion")):
+        guidance = "Las mejoras suelen sentirse **de manera gradual durante varias semanas de práctica constante**, pero no existe un plazo exacto garantizable. Influyen tu punto de partida, frecuencia, intensidad, sueño, recuperación y constancia."
+    elif "resistencia" in text:
+        guidance = "La resistencia es la capacidad de sostener un esfuerzo y recuperarte de él. Se desarrolla progresivamente combinando práctica regular, aumentos graduales de carga y recuperación suficiente."
+    else:
+        guidance = "La condición física mejora con práctica constante, progresión gradual, técnica controlada y recuperación. Los cambios deben ajustarse a tu respuesta real, no a una promesa de tiempo fija."
+    return ChatAnswer(
+        f"{guidance}\n\n{_personal_context_note(context)}",
+        "fitness_guidance",
+        {"conversation_intent": "GENERAL_FITNESS_QUERY", "profile_context_used": True, "vertex_called": False},
+    )
+
+
+def _general_nutrition_answer(question: str, context: UserContext) -> ChatAnswer:
+    text = _fold(question)
+    if "proteina" in text and any(term in text for term in ("alimento", "tienen", "cuales")):
+        guidance = "Fuentes habituales de proteína incluyen legumbres, tofu, huevo, lácteos compatibles con tus restricciones, pescado, pollo y otras carnes. La opción adecuada depende de tu perfil y del resto de la comida."
+    elif "proteina" in text:
+        guidance = "La proteína ayuda a mantener y reparar tejidos y contribuye a la recuperación después del entrenamiento. No necesita consumirse en cantidades extremas: debe integrarse de forma equilibrada en el día."
+    elif "antes de entrenar" in text:
+        guidance = "Antes de entrenar suele convenir una comida fácil de tolerar con carbohidrato y algo de proteína, dejando tiempo suficiente para digerir. La cantidad depende del horario, duración e intensidad."
+    elif "hidrata" in text:
+        guidance = "La hidratación ayuda a regular la temperatura y sostener el rendimiento. Conviene beber durante el día y ajustar según calor, duración del ejercicio y sudoración, sin forzar cantidades excesivas."
+    else:
+        guidance = "Una alimentación útil para entrenar combina energía suficiente, proteína, verduras, fibra e hidratación, respetando tus restricciones y porciones del plan."
+    restrictions = [RESTRICTION_LABELS.get(item, item) for item in context.profile.dietary_restrictions or []]
+    profile_note = f"Restricciones consideradas: **{_join_labels(restrictions)}**." if restrictions else "Tu perfil no registra restricciones alimentarias."
+    return ChatAnswer(
+        f"{guidance}\n\n{profile_note}",
+        "nutrition_guidance",
+        {"conversation_intent": "GENERAL_NUTRITION_QUERY", "profile_context_used": True, "dietary_restrictions": list(context.profile.dietary_restrictions or []), "vertex_called": False},
     )
 
 
@@ -700,22 +766,44 @@ def health():
 
 @app.post("/api/v1/auth/signup", status_code=201)
 def signup(payload: Credentials, db: Annotated[Session, Depends(db_session)]):
-    username = payload.username.casefold()
+    try:
+        credentials = validate_credentials(payload.model_dump())
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail()) from exc
+    username = credentials["username"]
     if db.scalar(select(User).where(User.username == username)):
-        raise HTTPException(status_code=409, detail="Ese nombre de usuario ya está en uso.")
-    user = User(username=username, password_hash=hash_password(payload.password))
+        raise HTTPException(status_code=409, detail={
+            "code": "USERNAME_TAKEN",
+            "field": "username",
+            "message": "Este nombre de usuario ya está registrado.",
+            "field_errors": {"username": "Este nombre de usuario ya está registrado."},
+        })
+    user = User(username=username, password_hash=hash_password(credentials["password"]))
     db.add(user)
-    db.flush()
-    db.add(Profile(user_id=user.id))
-    db.commit()
+    try:
+        db.flush()
+        db.add(Profile(user_id=user.id))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "code": "USERNAME_TAKEN",
+            "field": "username",
+            "message": "Este nombre de usuario ya está registrado.",
+            "field_errors": {"username": "Este nombre de usuario ya está registrado."},
+        }) from exc
     logger.info("auth_signup user_id=%s", user.id)
     return {"access_token": issue_token(user.id, user.username), "token_type": "bearer", "user": {"id": user.id, "username": user.username}}
 
 
 @app.post("/api/v1/auth/login")
 def login(payload: Credentials, db: Annotated[Session, Depends(db_session)]):
-    user = db.scalar(select(User).where(User.username == payload.username.casefold()))
-    if not user or not verify_password(payload.password, user.password_hash):
+    try:
+        credentials = validate_credentials(payload.model_dump())
+    except AuthValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail()) from exc
+    user = db.scalar(select(User).where(User.username == credentials["username"]))
+    if not user or not verify_password(credentials["password"], user.password_hash):
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
     logger.info("auth_login user_id=%s", user.id)
     return {"access_token": issue_token(user.id, user.username), "token_type": "bearer", "user": {"id": user.id, "username": user.username}}
@@ -889,6 +977,18 @@ async def chat(payload: ChatPayload, request: Request, user: Annotated[User, Dep
         result = _app_help_answer()
     elif conversation_intent in {"PROFILE_QUERY", "PROFILE_SUMMARY", "PROFILE_REVIEW", "USER_QUERY"}:
         result = _profile_answer(context, conversation_intent, payload.message)
+    elif conversation_intent == "GENERAL_FITNESS_QUERY":
+        result = _general_fitness_answer(payload.message, context)
+    elif conversation_intent == "GENERAL_NUTRITION_QUERY":
+        result = _general_nutrition_answer(payload.message, context)
+    elif conversation_intent == "contextual_followup" and context.memory and context.memory.last_intent in {"GENERAL_FITNESS_QUERY", "GENERAL_NUTRITION_QUERY"}:
+        previous_question = history[-1] if history else payload.message
+        prior = _general_fitness_answer(previous_question, context) if context.memory.last_intent == "GENERAL_FITNESS_QUERY" else _general_nutrition_answer(previous_question, context)
+        result = ChatAnswer(
+            f"Sí. Es parte del contexto de tu perfil y lo estoy relacionando con tus datos registrados.\n\n{prior.message}",
+            "contextual_guidance",
+            {**prior.metadata, "conversation_intent": "contextual_followup", "previous_intent": context.memory.last_intent},
+        )
     else:
         if not plan or not days:
             result = ChatAnswer(

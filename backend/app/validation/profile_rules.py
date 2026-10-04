@@ -34,6 +34,8 @@ PROFILE_FIELDS = {
     "language", "sex", "age", "height_cm", "weight_kg",
     "workout_hours_per_week", "goal", "dietary_restrictions", "available_days",
 }
+MEASUREMENT_STEP = 0.1
+HOURS_STEP = 0.1
 
 
 class ProfileValidationError(ValueError):
@@ -50,6 +52,10 @@ class ProfileValidationError(ValueError):
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _matches_step(value: float, step: float) -> bool:
+    return math.isclose(value / step, round(value / step), abs_tol=1e-8)
 
 
 def _required_string(raw: dict[str, Any], field: str, label: str, errors: dict[str, str]) -> str | None:
@@ -103,6 +109,9 @@ def validate_profile_data(raw: Any, *, require_complete: bool = True) -> dict[st
         if not _is_number(value) or not minimum <= float(value) <= maximum:
             errors[field] = f"{label} debe estar entre {minimum:g} y {maximum:g}."
             return None
+        if not _matches_step(float(value), MEASUREMENT_STEP):
+            errors[field] = f"{label} debe indicarse en incrementos de {MEASUREMENT_STEP:g}."
+            return None
         return float(value)
 
     height = valid_measurement("height_cm", "La estatura", 80, 250)
@@ -115,6 +124,8 @@ def validate_profile_data(raw: Any, *, require_complete: bool = True) -> dict[st
         errors["workout_hours_per_week"] = "Las horas semanales ingresadas superan el límite seguro permitido (máximo 28 hrs/semana)."
     elif float(hours) < 1:
         errors["workout_hours_per_week"] = "Las horas semanales deben ser de al menos 1 hr/semana."
+    elif not _matches_step(float(hours), HOURS_STEP):
+        errors["workout_hours_per_week"] = "Las horas semanales deben indicarse en incrementos de 0.1 horas (por ejemplo: 1, 1.1 o 1.5)."
     else:
         normalized_hours = float(hours)
 

@@ -157,6 +157,14 @@ def test_conversational_fitlife_intent_family_and_off_topic_boundary():
         "¿Cómo voy?": "PROGRESS_SUMMARY",
         "¿Cómo me llamo?": "USER_QUERY",
         "¿Qué ejercicio tengo este día?": "plan_question",
+        "¿En cuánto tiempo puedo mejorar mi resistencia?": "GENERAL_FITNESS_QUERY",
+        "¿Cómo mejoro mi condición física?": "GENERAL_FITNESS_QUERY",
+        "¿Para qué sirven los días de recuperación?": "GENERAL_FITNESS_QUERY",
+        "¿Qué significa 3x10?": "GENERAL_FITNESS_QUERY",
+        "¿Para qué sirve la proteína?": "GENERAL_NUTRITION_QUERY",
+        "¿Qué alimentos tienen proteína?": "GENERAL_NUTRITION_QUERY",
+        "¿Por qué necesito hidratarme?": "GENERAL_NUTRITION_QUERY",
+        "Es parte de mi objetivo": "contextual_followup",
     }
     for question, intent in expected.items():
         assert classify_conversation_intent(question) == intent

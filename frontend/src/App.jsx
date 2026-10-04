@@ -11,6 +11,7 @@ import { login, signUp } from "./services/authService";
 import { generatePlan, getPlan, getProfile, saveProfile, saveProgress } from "./services/planService";
 import { getChatContext, getChatHistory, sendChat } from "./services/chatService";
 import { validateProfile } from "./validation/profileRules";
+import { validateCredentials } from "./validation/authRules";
 import { toProfilePayload } from "./services/profileContract";
 import { chatEntry, chatRequestPayload, parseChatResponse } from "./services/chatContract";
 
@@ -85,4 +86,30 @@ function Dashboard() {
   return <main className="shell"><section className="card wide"><header className="top"><div><p className="eyebrow">FITLIFE AI · PERFIL SEGURO</p><h1>{tab === "profile" ? "Mi perfil" : "Mi plan"}</h1></div><button className="link" onClick={logout}>Cerrar sesión</button></header><nav><button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Mi perfil</button><button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}>Mi plan</button></nav>{tab === "profile" ? <UserProfileForm profile={profile} setProfile={setSafeProfile} onSave={save} onGenerate={buildPlan} busy={busy} message={message} serverErrors={fieldErrors} /> : <>{message && <p className="error">{message}</p>}{!plan ? <section className="empty"><h2>Aún no tienes un plan</h2><p>Completa tu perfil y genera un plan personalizado de 28 días.</p><button className="primary" onClick={() => setTab("profile")}>Ir a mi perfil</button></section> : <><div className="plan-intro"><div><h2>Tu calendario está listo</h2><p>28 días con progresión, variedad y días de recuperación según tu disponibilidad.</p></div><strong>{plan.completed_days.length}/28 completado</strong></div><div className="week-nav"><button className="secondary" disabled={week === 1} onClick={() => setWeek(week - 1)}>←</button><strong>Semana {week}</strong><button className="secondary" disabled={week === 4} onClick={() => setWeek(week + 1)}>→</button></div><CalendarView days={weekDays} selectedDate={selectedDate} onSelect={setSelectedDate} completed={plan.completed_days} />{selected && <DayPlan day={selected} complete={plan.completed_days.includes(selected.date)} onToggle={toggleDay} />}</>}</>} {plan && <ChatErrorBoundary><ChatWidget entries={entries} onSend={chat} loading={chatLoading} minimized={chatVisual.minimized} unread={chatVisual.unread} onMinimize={() => setChatVisualState(true)} onRestore={() => setChatVisualState(false)} /></ChatErrorBoundary>}</section></main>;
 }
 
-export default function App() { const { auth, setAuth } = useAuth(); const [mode, setMode] = useState("signup"); const [values, setValues] = useState({ username: "", password: "" }); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const submit = async () => { setBusy(true); setError(""); try { setAuth(await (mode === "signup" ? signUp(values) : login(values))); } catch (err) { setError(err.message); } finally { setBusy(false); } }; return auth ? <Dashboard /> : <LoginForm values={values} onChange={(key, value) => setValues({ ...values, [key]: value })} onSubmit={submit} busy={busy} error={error} mode={mode} setMode={setMode} />; }
+export default function App() {
+  const { auth, setAuth } = useAuth();
+  const [mode, setModeState] = useState("signup");
+  const [values, setValues] = useState({ username: "", password: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [authFieldErrors, setAuthFieldErrors] = useState({});
+  const setMode = (nextMode) => { setModeState(nextMode); setError(""); setAuthFieldErrors({}); };
+  const onChange = (key, value) => {
+    setValues({ ...values, [key]: value });
+    const nextErrors = { ...authFieldErrors };
+    delete nextErrors[key];
+    setAuthFieldErrors(nextErrors);
+    setError("");
+  };
+  const submit = async () => {
+    const localErrors = validateCredentials(values);
+    setAuthFieldErrors(localErrors);
+    if (Object.keys(localErrors).length) return;
+    setBusy(true);
+    setError("");
+    try { setAuth(await (mode === "signup" ? signUp(values) : login(values))); }
+    catch (err) { setAuthFieldErrors(err.fieldErrors || {}); setError(err.message); }
+    finally { setBusy(false); }
+  };
+  return auth ? <Dashboard /> : <LoginForm values={values} onChange={onChange} onSubmit={submit} busy={busy} error={error} fieldErrors={authFieldErrors} mode={mode} setMode={setMode} />;
+}

@@ -6,8 +6,8 @@ from .rules import normalize
 
 
 DOMAINS: dict[str, tuple[str, ...]] = {
-    "FITNESS": ("ejercicio", "entren", "rutina", "series", "repeticiones", "descanso", "peso", "mancuerna", "remo", "sentadilla", "flexion", "press", "salto", "cardio", "movilidad"),
-    "NUTRITION": ("comida", "comer", "desayuno", "cena", "caloria", "caloría", "proteina", "proteína", "receta", "prepar", "cocinar", "ingrediente", "garbanzo", "papa", "pollo", "macro"),
+    "FITNESS": ("ejercicio", "entren", "rutina", "serie", "repeticiones", "descanso", "peso", "mancuerna", "remo", "sentadilla", "flexion", "press", "salto", "cardio", "movilidad", "resistencia", "fuerza", "condicion fisica", "acondicionamiento", "progresion", "recuperacion", "3x10"),
+    "NUTRITION": ("comida", "comer", "alimento", "alimentacion", "desayuno", "cena", "caloria", "caloría", "proteina", "proteína", "receta", "prepar", "cocinar", "ingrediente", "garbanzo", "papa", "pollo", "macro", "hidrata"),
     "PLAN": ("mi plan", "hoy", "mañana", "calendario", "me toca", "progreso", "completado"),
     "WELLNESS": ("sueño", "sueno", "hidrat", "bienestar", "estrés", "estres", "recuperación", "recuperacion"),
 }

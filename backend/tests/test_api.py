@@ -195,6 +195,41 @@ def test_complete_fitlife_conversation_and_profile_isolation(monkeypatch):
         assert "ninguna restricción" in second_profile.json()["message"].casefold()
 
 
+def test_general_fitness_nutrition_and_contextual_followup_use_profile_without_promises(monkeypatch):
+    async def llm_must_not_run(**_):
+        raise AssertionError("general guidance is deterministic")
+
+    monkeypatch.setattr("app.main.llm.answer", llm_must_not_run)
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-general-guidance")
+        assert client.put("/api/v1/profile", headers=headers, json=profile()).status_code == 200
+        assert client.post("/api/v1/plan/generate", headers=headers).status_code == 201
+
+        fitness = client.post("/api/v1/chat", headers=headers, json={"message": "¿En cuánto tiempo genero resistencia?"})
+        assert fitness.status_code == 200, fitness.text
+        assert fitness.json()["intent"] == "GENERAL_FITNESS_QUERY"
+        assert "no existe un plazo exacto" in fitness.json()["message"]
+        assert "Condición general" in fitness.json()["message"]
+
+        followup = client.post("/api/v1/chat", headers=headers, json={
+            "message": "Es parte del perfil",
+            "session_id": fitness.json()["session_id"],
+        })
+        assert followup.status_code == 200, followup.text
+        assert followup.json()["intent"] == "contextual_followup"
+        assert "contexto de tu perfil" in followup.json()["message"]
+        assert "fuera" not in followup.json()["message"].casefold()
+
+        nutrition = client.post("/api/v1/chat", headers=headers, json={"message": "¿Para qué sirve la proteína?"})
+        assert nutrition.status_code == 200, nutrition.text
+        assert nutrition.json()["intent"] == "GENERAL_NUTRITION_QUERY"
+        assert "reparar tejidos" in nutrition.json()["message"]
+
+        blocked = client.post("/api/v1/chat", headers=headers, json={"message": "Escribe código Python"})
+        assert blocked.status_code == 200
+        assert blocked.json()["intent"] == "OFF_TOPIC"
+
+
 def test_selected_calendar_day_is_authoritative_for_deterministic_plan_questions(monkeypatch):
     async def vertex_must_not_run(**_):
         raise AssertionError("deterministic plan questions must not call the LLM")
