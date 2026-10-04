@@ -1,7 +1,7 @@
 import { DaysSelector } from "./DaysSelector";
 import { normalizeRestrictions, profileOptions, validateProfile } from "../../validation/profileRules";
 
-const restrictionLabels = { vegetarian: "Vegetariana", vegan: "Vegana", lactose_free: "Sin lactosa", gluten_free: "Sin gluten", nut_free: "Sin frutos secos" };
+const restrictionLabels = { vegetarian: "Vegetariana", vegan: "Vegana", lactose_free: "Sin lactosa", dairy_free: "Sin lácteos", gluten_free: "Sin gluten", nut_free: "Sin frutos secos" };
 
 export function UserProfileForm({ profile, setProfile, onSave, onGenerate, busy, message, serverErrors = {} }) {
   const set = (key, value) => setProfile({ ...profile, [key]: value });

@@ -49,6 +49,7 @@ class Plan(Base):
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_days: Mapped[list[str]] = mapped_column(JSON, default=list)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class PlanDay(Base):
@@ -124,3 +125,7 @@ def init_db() -> None:
         with engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
+    plan_columns = {column["name"] for column in inspect(engine).get_columns("plans")}
+    if "needs_review" not in plan_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE plans ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT 0"))

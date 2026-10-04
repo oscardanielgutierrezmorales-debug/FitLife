@@ -38,6 +38,8 @@ def test_profile_rules_normalize_supported_legacy_values():
 
     assert normalized["dietary_restrictions"] == ["vegan", "lactose_free"]
     assert normalized["available_days"] == [0, 2, 4]
+    distinct = validate_profile_data(valid_profile(dietary_restrictions=["sin lactosa", "sin lácteos"]))
+    assert distinct["dietary_restrictions"] == ["lactose_free", "dairy_free"]
 
 
 @pytest.mark.parametrize(

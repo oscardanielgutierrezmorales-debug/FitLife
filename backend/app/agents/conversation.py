@@ -5,7 +5,12 @@ import unicodedata
 from typing import Literal
 
 
-ConversationIntent = Literal["contextual_followup", "plan_question", "progress_question"]
+ConversationIntent = Literal[
+    "contextual_followup", "plan_question", "progress_question",
+    "SMALL_TALK", "APP_HELP", "PROFILE_QUERY", "PROFILE_SUMMARY", "PROFILE_REVIEW",
+    "PLAN_SUMMARY", "ROUTINE_SUMMARY", "NUTRITION_SUMMARY", "PROGRESS_SUMMARY",
+    "USER_QUERY", "PLAN_AUDIT", "PLAN_CONSTRAINT_CONFLICT",
+]
 ContextFocus = Literal["exercise", "meal", "overview"]
 
 
@@ -20,6 +25,30 @@ def classify_conversation_intent(message: str) -> ConversationIntent | None:
     meal, or plan item. This lets the persisted context answer it safely.
     """
     text = _fold(message).strip()
+    if re.fullmatch(r"[¿?¡!.,\s]*(hola|buenos dias|buenas tardes|buenas noches|como estas|gracias|muchas gracias|perfecto|entendido|ok|okay)[¿?¡!.,\s]*", text):
+        return "SMALL_TALK"
+    if re.search(r"\b(que puedes hacer|en que me puedes ayudar|para que sirve fitlife|como funciona (fitlife|mi plan)|puedes (ayudarme|revisar|modificar)|que funciones tienes)\b", text):
+        return "APP_HELP"
+    if re.search(r"\b(como me llamo|cual es mi nombre|que nombre tengo|quien soy)\b", text):
+        return "USER_QUERY"
+    if re.search(r"\b(me estas poniendo|mi plan (tiene|incluye)|estas incluyendo|aparece).*(lacte|lactosa|gluten|nueces|frutos secos|carne|pollo|huevo)|\b(soy|tengo).*(sin lactosa|sin lacteos|vegano|vegana|vegetariano|vegetariana|sin gluten)\b", text):
+        return "PLAN_CONSTRAINT_CONFLICT"
+    if re.search(r"\b(mi plan|la dieta|la rutina).*(respeta|cumple|considera).*(perfil|restric)|\baudita (mi )?plan\b", text):
+        return "PLAN_AUDIT"
+    if re.search(r"\b(resumen|resume).*(mi )?perfil\b", text) or re.search(r"\by de mi perfil\b", text):
+        return "PROFILE_SUMMARY"
+    if re.search(r"\b(revisa|revisar|evalua|analiza) (mi )?perfil\b", text):
+        return "PROFILE_REVIEW"
+    if re.search(r"\b(que|cuales|cuantas|cuantos|dime).*(restricciones|objetivo|dias disponibles|horas por semana)|\bmi dieta considera|\bque informacion tienes de mi\b", text):
+        return "PROFILE_QUERY"
+    if re.search(r"\b(resumen|resume).*(mi )?(plan)\b", text) or re.search(r"\by de mi plan\b", text):
+        return "PLAN_SUMMARY"
+    if re.search(r"\b(resumen|resume).*(mi )?(rutina|entrenamiento)\b", text) or re.search(r"\bresumen general de mi rutina\b", text):
+        return "ROUTINE_SUMMARY"
+    if re.search(r"\b(resumen|resume).*(mi )?(alimentacion|dieta|comidas)|\bcomo esta organizada mi dieta\b|\bque tipo de alimentacion\b|\by de mi alimentacion\b", text):
+        return "NUTRITION_SUMMARY"
+    if re.search(r"\b(como voy|resume mi progreso|como voy con mi plan|que he completado|cuanto llevo)\b|\by como voy\b", text):
+        return "PROGRESS_SUMMARY"
     # Progress questions are evaluated first: they refer to completed plan
     # state, not to the last subject discussed with the assistant.
     if re.search(
@@ -34,6 +63,8 @@ def classify_conversation_intent(message: str) -> ConversationIntent | None:
         r"que estabamos (viendo|hablando|haciendo))\b",
         text,
     ):
+        return "contextual_followup"
+    if re.fullmatch(r"[¿?¡!.,\s]*(resume todo|y eso|y despues|que sigue)[¿?¡!.,\s]*", text):
         return "contextual_followup"
     if re.search(r"\b(en que dia (de mi rutina )?voy|que dia de mi rutina voy|que entrenamiento sigue|cual es (mi )?(siguiente|proximo) entrenamiento|progreso|cuanto(s)? dias? llevo)\b", text):
         return "progress_question"

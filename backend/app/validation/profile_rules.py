@@ -20,6 +20,9 @@ SUPPORTED_RESTRICTIONS = {
     "vegano": "vegan",
     "lactose_free": "lactose_free",
     "sin lactosa": "lactose_free",
+    "dairy_free": "dairy_free",
+    "sin lacteos": "dairy_free",
+    "sin lácteos": "dairy_free",
     "gluten_free": "gluten_free",
     "sin gluten": "gluten_free",
     "nut_free": "nut_free",
@@ -153,7 +156,7 @@ def validate_profile_data(raw: Any, *, require_complete: bool = True) -> dict[st
             restrictions.append(mapped)
         if len(set(restrictions)) != len(restrictions):
             errors["dietary_restrictions"] = "No repitas restricciones alimentarias."
-        restrictions = [item for item in ("vegetarian", "vegan", "lactose_free", "gluten_free", "nut_free") if item in restrictions]
+        restrictions = [item for item in ("vegetarian", "vegan", "lactose_free", "dairy_free", "gluten_free", "nut_free") if item in restrictions]
         if "vegan" in restrictions:
             restrictions.remove("vegetarian")
 

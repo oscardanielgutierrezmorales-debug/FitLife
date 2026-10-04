@@ -6,7 +6,9 @@ from app.agents.conversation import asks_last_completed_exercise, classify_conve
 from app.guardrails.domain_classifier import classify_domain
 from app.agents.planner import generate_plan
 from app.agents.nutrition import plan_nutrition_response
+from app.agents.router import route
 from app.rag.retriever import LocalRetriever
+from app.validation.plan_rules import validate_plan_against_profile
 
 
 def profile():
@@ -139,6 +141,44 @@ def test_contextual_and_plan_turns_are_routed_before_entity_extraction():
     assert classify_conversation_intent("¿Cuál fue el último ejercicio que hice?") == "progress_question"
     assert asks_last_completed_exercise("¿Cuál fue el último ejercicio que hice?")
     assert classify_conversation_intent("¿Cómo hago la flexión inclinada?") is None
+
+
+def test_conversational_fitlife_intent_family_and_off_topic_boundary():
+    expected = {
+        "Hola": "SMALL_TALK",
+        "¿Cómo estás?": "SMALL_TALK",
+        "Gracias": "SMALL_TALK",
+        "¿Qué puedes hacer?": "APP_HELP",
+        "Dame un resumen de mi perfil": "PROFILE_SUMMARY",
+        "Revisa mi perfil": "PROFILE_REVIEW",
+        "Dame un resumen de mi plan": "PLAN_SUMMARY",
+        "Dame un resumen general de mi rutina": "ROUTINE_SUMMARY",
+        "Resume mi alimentación": "NUTRITION_SUMMARY",
+        "¿Cómo voy?": "PROGRESS_SUMMARY",
+        "¿Cómo me llamo?": "USER_QUERY",
+        "¿Qué ejercicio tengo este día?": "plan_question",
+    }
+    for question, intent in expected.items():
+        assert classify_conversation_intent(question) == intent
+        assert route(question) == intent
+    assert classify_conversation_intent("¿Cómo hago la flexión inclinada?") is None
+    assert route("¿Cómo hago la flexión inclinada?") == "EXERCISE_INSTRUCTION"
+    for question in ("¿Cuánto es 2+2?", "Escribe un script en Python", "Háblame de Pokémon"):
+        assert classify_conversation_intent(question) is None
+        assert classify_domain(question) == "OFF_TOPIC"
+
+
+def test_structured_constraint_validation_distinguishes_lactose_from_dairy():
+    lactose_profile = profile() | {"dietary_restrictions": ["lactose_free"]}
+    lactose_plan = generate_plan(lactose_profile, date(2026, 10, 5))
+    assert validate_plan_against_profile(lactose_profile, lactose_plan) == {"valid": True, "violations": []}
+    assert any(meal["dietary_properties"]["contains_dairy"] for day in lactose_plan for meal in day["nutrition"]["meals"])
+    assert all(not meal["dietary_properties"]["contains_lactose"] for day in lactose_plan for meal in day["nutrition"]["meals"])
+
+    dairy_profile = profile() | {"dietary_restrictions": ["dairy_free"]}
+    dairy_plan = generate_plan(dairy_profile, date(2026, 10, 5))
+    assert validate_plan_against_profile(dairy_profile, dairy_plan)["valid"] is True
+    assert all(not meal["dietary_properties"]["contains_dairy"] for day in dairy_plan for meal in day["nutrition"]["meals"])
 
 
 def test_off_topic_categories_override_misleading_fitlife_verbs():

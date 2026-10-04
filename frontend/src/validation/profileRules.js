@@ -2,13 +2,13 @@ export const profileOptions = {
   languages: ["es", "en"],
   sex: ["female", "male", "non_binary", "prefer_not_to_say"],
   goals: ["weight_loss", "hypertrophy", "endurance", "general_fitness"],
-  restrictions: ["vegetarian", "vegan", "lactose_free", "gluten_free", "nut_free"],
+  restrictions: ["vegetarian", "vegan", "lactose_free", "dairy_free", "gluten_free", "nut_free"],
 };
 
 const legacyNoRestriction = new Set(["", "none", "nothing", "ninguna", "ninguno", "sin restricciones"]);
 const aliases = {
   vegetariana: "vegetarian", vegetariano: "vegetarian", vegan: "vegan", vegana: "vegan", vegano: "vegan",
-  "sin lactosa": "lactose_free", "sin gluten": "gluten_free", "sin frutos secos": "nut_free", "sin nueces": "nut_free",
+  "sin lactosa": "lactose_free", "sin lácteos": "dairy_free", "sin lacteos": "dairy_free", "sin gluten": "gluten_free", "sin frutos secos": "nut_free", "sin nueces": "nut_free",
 };
 
 export function normalizeRestrictions(values) {

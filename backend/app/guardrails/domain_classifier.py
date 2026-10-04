@@ -24,7 +24,8 @@ OFF_TOPIC_PATTERNS: dict[str, tuple[str, ...]] = {
 def off_topic_category(message: str) -> str | None:
     normalized = normalize(message)
     for category, patterns in OFF_TOPIC_PATTERNS.items():
-        if any(re.search(pattern, normalized) for pattern in patterns):
+        candidate = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "", normalized) if category == "matemáticas" else normalized
+        if any(re.search(pattern, candidate) for pattern in patterns):
             return category
     return None
 

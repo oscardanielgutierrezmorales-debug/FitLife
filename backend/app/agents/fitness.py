@@ -14,7 +14,7 @@ ExerciseIntent = Literal["exercise_instruction", "routine_membership", "exercise
 # entity is matched only against the authenticated plan and the exercise KB.
 STOP_WORDS = {
     "a", "al", "como", "cual", "cuanto", "cuantas", "de", "del", "dentro", "el", "elejercicio",
-    "en", "encuentra", "encuentro", "es", "esta", "este", "hacer", "hacerlo", "hace", "hago",
+    "en", "encuentra", "encuentro", "es", "esta", "este", "ese", "esto", "hacer", "hacerlo", "hace", "hago",
     "la", "las", "lo", "los", "me", "mi", "no", "o", "para", "podria", "podrias", "puedes",
     "que", "realizar", "realizarlo", "se", "si", "su", "tecnica", "tecnicas", "un", "una", "y",
     "ejercicio", "rutina", "plan", "series", "repeticiones", "descanso", "paso", "pasos",

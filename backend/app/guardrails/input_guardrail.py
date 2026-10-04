@@ -25,5 +25,9 @@ def evaluate_input(message: str) -> GuardrailDecision:
         category = off_topic_category(message)
         if category:
             return GuardrailDecision(False, intent, f"FitLife está diseñado para ayudarte con fitness, nutrición, recetas, bienestar y tu plan personalizado. No puedo responder preguntas generales de {category} desde este chat.")
-        return GuardrailDecision(False, intent, "Esta pregunta está fuera del alcance de FitLife. Puedo ayudarte con tu rutina, ejercicios, alimentación, recetas, progreso y tu plan personalizado de 28 días.")
+        alternatives = (
+            "Eso se sale de lo que puedo ayudarte desde FitLife. Aquí puedo revisar tu entrenamiento, alimentación, perfil, progreso y plan.",
+            "Ese tema no forma parte de FitLife. Si quieres, puedo ayudarte con tu rutina, comidas, perfil o progreso.",
+        )
+        return GuardrailDecision(False, intent, alternatives[sum(map(ord, message)) % len(alternatives)])
     return GuardrailDecision(True, intent)

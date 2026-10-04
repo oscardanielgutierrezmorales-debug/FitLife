@@ -11,6 +11,7 @@ const valid = (changes = {}) => ({
 test("acepta un perfil válido y normaliza restricciones heredadas", () => {
   assert.deepEqual(validateProfile(valid()), {});
   assert.deepEqual(normalizeRestrictions(["vegana", "vegetariana", "nothing"]), ["vegan"]);
+  assert.deepEqual(normalizeRestrictions(["sin lactosa", "sin lácteos"]), ["lactose_free", "dairy_free"]);
 });
 
 test("muestra el límite seguro de 28 horas antes de enviar el perfil", () => {

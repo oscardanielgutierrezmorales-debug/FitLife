@@ -5,6 +5,7 @@ import re
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -22,15 +23,17 @@ from .agents.conversation import asks_last_completed_exercise, classify_conversa
 from .agents.fitness import exercise_response, extract_exercise_entity, find_exercise, find_exercise_in_user_plan
 from .agents.nutrition import nutrition_context, plan_nutrition_answer
 from .agents.planner import generate_plan
-from .agents.router import route
+from .agents.router import route, route_domain
 from .config import settings
 from .db import ChatMessage, ChatSession, Plan, PlanDay, Profile, Progress, SessionLocal, User, UserMemory, init_db
 from .guardrails import evaluate_input, validate_output
+from .guardrails.domain_classifier import off_topic_category
 from .guardrails.input_guardrail import GuardrailDecision
 from .llm import LLMUnavailable, LocalLLM, VertexLLM
 from .rag import LocalRetriever
 from .security import hash_password, issue_token, read_token, verify_password
-from .validation import ProfileValidationError, validate_profile_data
+from .user_context import UserContext, get_user_context
+from .validation import ProfileValidationError, validate_plan_against_profile, validate_profile_data
 
 
 logger = logging.getLogger("fitlife")
@@ -38,6 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 bearer = HTTPBearer(auto_error=False)
 retriever = LocalRetriever(settings.vector_db_path)
 llm = VertexLLM() if settings.llm_provider.casefold() == "vertex" else LocalLLM()
+PLAN_AFFECTING_PROFILE_FIELDS = {"sex", "age", "height_cm", "weight_kg", "workout_hours_per_week", "goal", "dietary_restrictions", "available_days"}
 
 
 class Credentials(BaseModel):
@@ -126,8 +130,15 @@ def get_plan(db: Session, user_id: str) -> tuple[Plan, list[PlanDay]]:
     return plan, days
 
 
-def plan_view(plan: Plan, days: list[PlanDay]) -> dict[str, Any]:
-    return {"id": plan.id, "profile_version": plan.profile_version, "generated_at": plan.generated_at, "completed_days": plan.completed_days or [], "days": [day.payload for day in days]}
+def plan_view(plan: Plan, days: list[PlanDay], *, current_profile_version: int | None = None) -> dict[str, Any]:
+    return {
+        "id": plan.id,
+        "profile_version": plan.profile_version,
+        "generated_at": plan.generated_at,
+        "completed_days": plan.completed_days or [],
+        "needs_review": bool(plan.needs_review or (current_profile_version is not None and plan.profile_version != current_profile_version)),
+        "days": [day.payload for day in days],
+    }
 
 
 MONTHS = {
@@ -269,6 +280,7 @@ def _plan_question_answer(state: dict[str, Any], question: str = "", *, progress
     if re.search(r"\b(ejercicio|ejercicios|entrenamiento|rutina)\b", text):
         exercises = target.payload.get("workout", {}).get("exercises", [])
         if exercises:
+            metadata["exercise"] = exercises[0]["name"]
             exercise_lines = "\n".join(f"{index}. {exercise['name']}" for index, exercise in enumerate(exercises, start=1))
             return ChatAnswer(
                 f"Estás viendo **{workout}** del {target.date}. Tienes:\n{exercise_lines}",
@@ -367,7 +379,7 @@ def _contextual_answer(memory: UserMemory | None, plan: Plan, days: list[PlanDay
     )
 
 
-def _remember(db: Session, *, user_id: str, plan: Plan, result: ChatAnswer) -> None:
+def _remember(db: Session, *, user_id: str, plan: Plan | None, result: ChatAnswer) -> None:
     """Persist compact, non-sensitive conversational facts for the account."""
     metadata = result.metadata
     intent = metadata.get("exercise_intent") or metadata.get("conversation_intent")
@@ -377,7 +389,7 @@ def _remember(db: Session, *, user_id: str, plan: Plan, result: ChatAnswer) -> N
     if not memory:
         memory = UserMemory(user_id=user_id)
         db.add(memory)
-    memory.plan_id = plan.id
+    memory.plan_id = plan.id if plan else None
     memory.last_intent = str(intent or "conversation")
     if intent == "contextual_followup":
         return
@@ -393,6 +405,13 @@ def _remember(db: Session, *, user_id: str, plan: Plan, result: ChatAnswer) -> N
         memory.last_topic = "esa comida del plan"
     if workout := metadata.get("last_workout"):
         memory.last_workout = str(workout)
+    if str(intent).endswith("_SUMMARY") or intent in {"PROFILE_REVIEW", "PLAN_AUDIT", "PLAN_CONSTRAINT_CONFLICT"}:
+        memory.last_topic = {
+            "PROFILE_SUMMARY": "el resumen de tu perfil", "PROFILE_REVIEW": "la revisión de tu perfil",
+            "PLAN_SUMMARY": "el resumen de tu plan", "ROUTINE_SUMMARY": "el resumen de tu rutina",
+            "NUTRITION_SUMMARY": "el resumen de tu alimentación", "PROGRESS_SUMMARY": "tu progreso",
+            "PLAN_AUDIT": "la validación de tu plan", "PLAN_CONSTRAINT_CONFLICT": "una restricción de tu perfil",
+        }.get(str(intent), memory.last_topic)
 
 
 def _history(db: Session, session_id: str) -> list[str]:
@@ -407,16 +426,178 @@ class ChatAnswer:
     metadata: dict[str, Any]
 
 
+RESTRICTION_LABELS = {
+    "vegetarian": "Vegetariana", "vegan": "Vegana", "lactose_free": "Sin lactosa",
+    "dairy_free": "Sin lácteos", "gluten_free": "Sin gluten", "nut_free": "Sin frutos secos",
+}
+GOAL_LABELS = {
+    "general_fitness": "Condición general", "weight_loss": "Composición corporal",
+    "hypertrophy": "Fuerza e hipertrofia", "endurance": "Resistencia",
+}
+DAY_LABELS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def _join_labels(items: list[str]) -> str:
+    if not items:
+        return "ninguna"
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + f" y {items[-1]}"
+
+
+def _small_talk_answer(question: str) -> ChatAnswer:
+    text = _fold(question)
+    if "gracias" in text:
+        message = "¡Con gusto! Si necesitas revisar tu perfil, entrenamiento, alimentación o progreso, aquí estoy."
+    elif any(term in text for term in ("perfecto", "entendido", "ok", "okay")):
+        message = "Perfecto. ¿Quieres revisar tu entrenamiento, tus comidas o cómo vas con el plan?"
+    elif "como estas" in text:
+        message = "¡Muy bien! Listo para ayudarte con FitLife. ¿Revisamos tu entrenamiento, alimentación o progreso?"
+    else:
+        message = "¡Hola! Puedo ayudarte con tu perfil, entrenamiento, alimentación y progreso. ¿Qué quieres revisar?"
+    return ChatAnswer(message, "social", {"conversation_intent": "SMALL_TALK", "vertex_called": False})
+
+
+def _app_help_answer() -> ChatAnswer:
+    return ChatAnswer(
+        "Puedo consultar tu perfil y plan reales, resumir tu rutina, comidas y progreso, explicar ejercicios y recetas, y detectar incompatibilidades entre tu perfil y el plan. Los cambios de perfil se confirman desde **Mi perfil**.",
+        "app",
+        {"conversation_intent": "APP_HELP", "vertex_called": False},
+    )
+
+
+def _profile_answer(context: UserContext, intent: str, question: str) -> ChatAnswer:
+    profile = profile_input(context.profile)
+    restrictions = [RESTRICTION_LABELS.get(item, item) for item in profile["dietary_restrictions"]]
+    days = [DAY_LABELS[item] for item in profile["available_days"]]
+    goal = GOAL_LABELS.get(profile["goal"], profile["goal"])
+    metadata = {"conversation_intent": intent, "vertex_called": False, "profile_version": context.profile.version}
+    text = _fold(question)
+    if intent == "USER_QUERY":
+        return ChatAnswer(
+            f"No tengo un nombre personal guardado en tu perfil. Tu cuenta autenticada usa el nombre de usuario **{context.user.username}**.",
+            "profile",
+            metadata,
+        )
+    if intent == "PROFILE_QUERY":
+        if "restric" in text or "dieta considera" in text:
+            detail = _join_labels(restrictions) if restrictions else "ninguna restricción alimentaria"
+            return ChatAnswer(f"En tu perfil tienes: **{detail}**.", "profile", metadata)
+        if "objetivo" in text:
+            return ChatAnswer(f"Tu objetivo registrado es **{goal}**.", "profile", metadata)
+        if "hora" in text:
+            return ChatAnswer(f"Indicaste **{profile['workout_hours_per_week']:g} horas por semana**.", "profile", metadata)
+        if "dia" in text:
+            return ChatAnswer(f"Tienes **{len(days)} días disponibles**: {_join_labels(days)}.", "profile", metadata)
+    stale = bool(context.plan and (context.plan.needs_review or context.plan.profile_version != context.profile.version))
+    plan_note = " Tu plan actual necesita regenerarse para aplicar la versión más reciente del perfil." if stale else " Tu plan actual corresponde a esta versión del perfil." if context.plan else " Aún no tienes un plan generado."
+    return ChatAnswer(
+        "Tu perfil actual indica:\n"
+        f"- **Objetivo:** {goal}\n"
+        f"- **Disponibilidad:** {profile['workout_hours_per_week']:g} horas por semana\n"
+        f"- **Restricciones alimentarias:** {_join_labels(restrictions) if restrictions else 'Ninguna'}\n"
+        f"- **Días disponibles:** {_join_labels(days)}.\n\n{plan_note.strip()}",
+        "profile",
+        metadata,
+    )
+
+
+def _summary_answer(intent: str, context: UserContext, state: dict[str, Any]) -> ChatAnswer:
+    plan, days = context.plan, context.days
+    assert plan is not None
+    metadata = {"conversation_intent": intent, "vertex_called": False, "plan_day": state["day"].date}
+    if intent == "PLAN_SUMMARY":
+        return ChatAnswer(
+            f"Tu plan dura **{len(days)} días**, del {days[0].date} al {days[-1].date}. Has completado **{state['completed_count']} de {len(days)} días** y estás revisando la semana {state['week']}. "
+            f"Incluye {sum(day.kind == 'workout' for day in days)} sesiones de entrenamiento y {sum(day.kind != 'workout' for day in days)} días de recuperación o descanso. "
+            f"Tu siguiente entrenamiento es **{_workout_name(state['next_workout']) or 'ninguno pendiente'}**.",
+            "plan",
+            metadata,
+        )
+    if intent == "ROUTINE_SUMMARY":
+        workouts = [day for day in days if day.kind == "workout"]
+        types = list(dict.fromkeys(_workout_name(day) for day in workouts))
+        durations = [int(day.payload["workout"]["duration_minutes"]) for day in workouts]
+        exercises = Counter(exercise["name"] for day in workouts for exercise in day.payload["workout"]["exercises"])
+        recurrent = [name for name, _ in exercises.most_common(4)]
+        return ChatAnswer(
+            f"Tu rutina tiene **{len(workouts)} sesiones en 4 semanas** y combina {_join_labels([str(item) for item in types])}. "
+            f"Las sesiones duran entre **{min(durations)} y {max(durations)} minutos**. Los ejercicios más recurrentes son {_join_labels(recurrent)}; el resto de los días prioriza movilidad, recuperación o descanso.",
+            "plan",
+            metadata,
+        )
+    if intent == "NUTRITION_SUMMARY":
+        calories = [int(day.payload["nutrition"]["daily_calories"]) for day in days]
+        restrictions = [RESTRICTION_LABELS.get(item, item) for item in context.profile.dietary_restrictions or []]
+        return ChatAnswer(
+            "Tu alimentación está organizada en **desayuno, comida, colación y cena** cada día, "
+            f"con objetivos diarios entre **{min(calories)} y {max(calories)} kcal**. "
+            f"Restricciones aplicadas desde tu perfil: **{_join_labels(restrictions) if restrictions else 'ninguna'}**.",
+            "plan",
+            {**metadata, "dietary_restrictions": list(context.profile.dietary_restrictions or [])},
+        )
+    return _plan_question_answer(state, progress=True)
+
+
+def _plan_audit_answer(context: UserContext, intent: str, question: str) -> ChatAnswer:
+    assert context.plan is not None
+    profile = profile_input(context.profile)
+    audit = validate_plan_against_profile(profile, [day.payload for day in context.days])
+    text = _fold(question)
+    claimed = next((key for phrase, key in (
+        ("sin lactosa", "lactose_free"), ("sin lacteos", "dairy_free"), ("vegano", "vegan"),
+        ("vegana", "vegan"), ("vegetariano", "vegetarian"), ("vegetariana", "vegetarian"),
+        ("sin gluten", "gluten_free"), ("frutos secos", "nut_free"), ("nueces", "nut_free"),
+    ) if phrase in text), None)
+    restrictions = set(profile["dietary_restrictions"])
+    if not claimed and "lacte" in text and "lactose_free" in restrictions:
+        claimed = "lactose_free"
+    metadata = {"conversation_intent": intent, "vertex_called": False, "plan_valid": audit["valid"], "violation_count": len(audit["violations"])}
+    if claimed and claimed not in restrictions:
+        return ChatAnswer(
+            f"En tu perfil actual no aparece marcada la restricción **{RESTRICTION_LABELS[claimed]}**. Puedes actualizarla en **Mi perfil** y luego regenerar el plan para aplicarla.",
+            "profile_audit",
+            metadata,
+        )
+    stale = context.plan.needs_review or context.plan.profile_version != context.profile.version
+    relevant = [item for item in audit["violations"] if item.get("type") == "dietary_restriction" and (not claimed or item.get("restriction") == claimed)]
+    if relevant:
+        issue = relevant[0]
+        return ChatAnswer(
+            f"Tienes razón: tu perfil marca **{RESTRICTION_LABELS.get(issue['restriction'], issue['restriction'])}**, pero encontré una incompatibilidad en {issue['meal']} del {issue['date']}: **{issue['item']}**. El plan debe regenerarse antes de considerarlo actualizado.",
+            "profile_audit",
+            metadata,
+        )
+    if stale or any(item["type"] == "missing_dietary_metadata" for item in audit["violations"]):
+        return ChatAnswer(
+            "Consulté tu perfil real. La restricción está registrada, pero el plan fue generado con otra versión del perfil o sin metadatos suficientes para validarlo; debes regenerarlo antes de asumir que la aplica.",
+            "profile_audit",
+            metadata,
+        )
+    if claimed == "lactose_free" and "lacte" in text:
+        return ChatAnswer(
+            "Tu perfil marca **Sin lactosa** y el plan validado no contiene lactosa. Recuerda que *sin lactosa* no significa *sin lácteos*: un producto lácteo certificado sin lactosa puede ser compatible. Si necesitas excluir todos los lácteos, marca **Sin lácteos** en tu perfil y regenera el plan.",
+            "profile_audit",
+            metadata,
+        )
+    return ChatAnswer(
+        "Validé el plan contra tu perfil actual y no encontré incompatibilidades en restricciones alimentarias, días disponibles, horas semanales ni objetivo.",
+        "profile_audit",
+        metadata,
+    )
+
+
 def _plan_summary(day: PlanDay) -> str:
     payload = day.payload
     meals = payload["nutrition"]["meals"]
     return f"Para el {payload['date']} tu plan indica {payload['title']}. Actividad: {payload['workout']['type']} durante {payload['workout']['duration_minutes']} min. Comidas: " + "; ".join(f"{meal['meal_type']}: {meal['name']}" for meal in meals) + "."
 
 
-async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[PlanDay], history: list[str], request_id: str, metrics: dict[str, float | bool]) -> ChatAnswer:
+async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[PlanDay], profile: dict[str, Any], memory: UserMemory | None, history: list[str], request_id: str, metrics: dict[str, float | bool]) -> ChatAnswer:
     if intent == "FITNESS":
         rag_started = time.perf_counter()
-        lookup = find_exercise(question, [{"payload": item.payload} for item in days], retriever, history)
+        exercise_history = [*history, memory.last_exercise] if memory and memory.last_exercise else history
+        lookup = find_exercise(question, [{"payload": item.payload} for item in days], retriever, exercise_history)
         metrics["rag_ms"] = round((time.perf_counter() - rag_started) * 1000, 2)
         logger.info("rag_completed request_id=%s intent=%s rag_ms=%s", request_id, intent, metrics["rag_ms"])
         source = (
@@ -456,7 +637,7 @@ async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[
             return ChatAnswer(
                 exact.message,
                 "plan_rag" if exact.knowledge else "plan",
-                {"date": exact.day["date"], "meal": exact.meal["name"], "technical_guide_found": bool(exact.knowledge)},
+                {"date": exact.day["date"], "meal": exact.meal["name"], "technical_guide_found": bool(exact.knowledge), "dietary_restrictions": list(profile.get("dietary_restrictions") or [])},
             )
     if intent == "PLAN":
         return ChatAnswer(_plan_summary(day), "plan", {"date": day.date})
@@ -468,7 +649,8 @@ async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[
     if source and any(term in question.casefold() for term in ("prepar", "cocin", "receta", "ingrediente")):
         return ChatAnswer(source, "rag", {})
     agent = "nutrición" if intent == "NUTRITION" else "bienestar" if intent == "WELLNESS" else "planificación"
-    system = f"Eres el agente local de {agent} de FitLife. Responde en español, de forma concisa y segura. No inventes datos del plan ni fuentes. Para síntomas graves recomienda atención profesional. Contexto recuperado localmente: {source or 'sin resultado específico'}"
+    relevant_profile = {"goal": profile.get("goal"), "dietary_restrictions": list(profile.get("dietary_restrictions") or [])} if intent == "NUTRITION" else {"goal": profile.get("goal")}
+    system = f"Eres el agente local de {agent} de FitLife. Responde en español, de forma concisa y segura. No inventes datos del plan ni fuentes. Para síntomas graves recomienda atención profesional. Contexto de perfil mínimo: {relevant_profile}. Contexto recuperado localmente: {source or 'sin resultado específico'}"
     metrics["vertex_called"] = isinstance(llm, VertexLLM)
     vertex_started = time.perf_counter()
     if metrics["vertex_called"]:
@@ -477,7 +659,7 @@ async def _agent_answer(*, question: str, intent: str, day: PlanDay, days: list[
     metrics["vertex_ms"] = round((time.perf_counter() - vertex_started) * 1000, 2) if metrics["vertex_called"] else 0.0
     if metrics["vertex_called"]:
         logger.info("vertex_completed request_id=%s intent=%s vertex_ms=%s", request_id, intent, metrics["vertex_ms"])
-    return ChatAnswer(message, "llm", {"vertex_called": metrics["vertex_called"]})
+    return ChatAnswer(message, "llm", {"vertex_called": metrics["vertex_called"], "profile_context_used": True})
 
 
 @asynccontextmanager
@@ -557,12 +739,21 @@ def update_profile(payload: dict[str, Any], user: Annotated[User, Depends(curren
     except ProfileValidationError as exc:
         raise invalid_profile_response(exc, user_id=user.id, operation="save") from exc
     profile = db.get(Profile, user.id)
-    for name, value in normalized.items():
-        setattr(profile, name, value)
-    profile.version += 1
+    previous = profile_input(profile)
+    changed_fields = {name for name, value in normalized.items() if previous.get(name) != value}
+    if changed_fields:
+        for name, value in normalized.items():
+            setattr(profile, name, value)
+        profile.version += 1
+    plan = db.scalar(select(Plan).where(Plan.user_id == user.id))
+    if plan and changed_fields:
+        if changed_fields & PLAN_AFFECTING_PROFILE_FIELDS:
+            plan.needs_review = True
+        else:
+            plan.profile_version = profile.version
     db.commit()
     logger.info("profile_updated user_id=%s profile_version=%s", user.id, profile.version)
-    return {**profile_dict(profile), "plan_needs_regeneration": bool(db.scalar(select(Plan).where(Plan.user_id == user.id))) }
+    return {**profile_dict(profile), "plan_needs_regeneration": bool(plan and plan.needs_review)}
 
 
 @app.post("/api/v1/plan/generate", status_code=201)
@@ -572,15 +763,19 @@ def generate_user_plan(user: Annotated[User, Depends(current_user)], db: Annotat
         normalized_profile = validate_profile_data(profile_input(profile))
     except ProfileValidationError as exc:
         raise invalid_profile_response(exc, user_id=user.id, operation="generate") from exc
+    generated = generate_plan(normalized_profile)
+    validation = validate_plan_against_profile(normalized_profile, generated)
+    if not validation["valid"]:
+        logger.error("plan_validation_failed user_id=%s violation_types=%s", user.id, ",".join(sorted({item["type"] for item in validation["violations"]})))
+        raise HTTPException(status_code=422, detail={"message": "No fue posible generar un plan compatible con tu perfil.", "violations": validation["violations"]})
     existing = db.scalar(select(Plan).where(Plan.user_id == user.id))
     if existing:
         db.execute(delete(PlanDay).where(PlanDay.plan_id == existing.id))
         db.delete(existing)
         db.flush()
-    plan = Plan(user_id=user.id, profile_version=profile.version, completed_days=[])
+    plan = Plan(user_id=user.id, profile_version=profile.version, completed_days=[], needs_review=False)
     db.add(plan)
     db.flush()
-    generated = generate_plan(normalized_profile)
     for item in generated:
         db.add(PlanDay(plan_id=plan.id, date=item["date"], week=item["week"], day_index=item["day_index"], kind=item["kind"], title=item["title"], payload=item))
     memory = db.get(UserMemory, user.id)
@@ -592,25 +787,26 @@ def generate_user_plan(user: Annotated[User, Depends(current_user)], db: Annotat
     memory.last_intent = "plan_generated"
     db.commit()
     logger.info("plan_generated user_id=%s plan_id=%s days=%s", user.id, plan.id, len(generated))
-    return plan_view(plan, list(db.scalars(select(PlanDay).where(PlanDay.plan_id == plan.id).order_by(PlanDay.day_index))))
+    return plan_view(plan, list(db.scalars(select(PlanDay).where(PlanDay.plan_id == plan.id).order_by(PlanDay.day_index))), current_profile_version=profile.version)
 
 
 @app.get("/api/v1/plan")
 def read_plan(user: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(db_session)]):
     plan, days = get_plan(db, user.id)
-    return plan_view(plan, days)
+    profile = db.get(Profile, user.id)
+    return plan_view(plan, days, current_profile_version=profile.version)
 
 
 @app.get("/api/v1/context")
 def read_context(user: Annotated[User, Depends(current_user)], db: Annotated[Session, Depends(db_session)]):
     """Load durable, account-scoped context without restoring visual chat history."""
-    memory = db.get(UserMemory, user.id)
+    context = get_user_context(db, user.id)
     try:
         plan, days, state = get_current_plan_context(db, user.id)
     except HTTPException:
-        return {"memory": _memory_view(memory), "plan": None}
+        return {"memory": _memory_view(context.memory), "plan": None}
     return {
-        "memory": _memory_view(memory),
+        "memory": _memory_view(context.memory),
         "plan": {
             "id": plan.id,
             "day_number": state["day_number"],
@@ -661,11 +857,13 @@ async def chat(payload: ChatPayload, request: Request, user: Annotated[User, Dep
     routing_started = time.perf_counter()
     conversation_intent = classify_conversation_intent(payload.message)
     decision = evaluate_input(payload.message)
-    agent_intent = route(payload.message)
+    routed_intent = route(payload.message)
+    agent_intent = route_domain(payload.message)
     # A contextual/plan follow-up is inside FitLife's domain even if it has no
     # fitness keyword. Security blocks always keep precedence over this route.
-    if not decision.allow and decision.intent == "OFF_TOPIC" and conversation_intent:
-        decision = GuardrailDecision(True, "FITLIFE_PLAN")
+    if not decision.allow and decision.intent == "OFF_TOPIC" and conversation_intent and not off_topic_category(payload.message):
+        decision = GuardrailDecision(True, "FITLIFE_CONTEXT")
+    effective_intent = decision.intent if not decision.allow else (conversation_intent or routed_intent)
     metrics["router_ms"] = round((time.perf_counter() - routing_started) * 1000, 2)
     logger.info("routing_completed request_id=%s intent=%s conversation_intent=%s allow=%s router_ms=%s", request_id, agent_intent, conversation_intent, decision.allow, metrics["router_ms"])
     db_started = time.perf_counter()
@@ -677,33 +875,56 @@ async def chat(payload: ChatPayload, request: Request, user: Annotated[User, Dep
         db.add(session)
         db.flush()
     history = _history(db, session.id)
-    db.add(ChatMessage(session_id=session.id, role="user", content=payload.message, intent=decision.intent))
+    db.add(ChatMessage(session_id=session.id, role="user", content=payload.message, intent=effective_intent))
     metrics["db_ms"] = round((time.perf_counter() - db_started) * 1000, 2)
+    context_started = time.perf_counter()
+    context = get_user_context(db, user.id)
+    metrics["db_ms"] = round(float(metrics["db_ms"]) + ((time.perf_counter() - context_started) * 1000), 2)
+    plan, days = context.plan, context.days
     if not decision.allow:
         result = ChatAnswer(decision.message or "Esta pregunta está fuera del alcance de FitLife. Puedo ayudarte con tu rutina, ejercicios, alimentación, recetas y tu plan personalizado de 28 días.", "guardrail", {})
+    elif conversation_intent == "SMALL_TALK":
+        result = _small_talk_answer(payload.message)
+    elif conversation_intent == "APP_HELP":
+        result = _app_help_answer()
+    elif conversation_intent in {"PROFILE_QUERY", "PROFILE_SUMMARY", "PROFILE_REVIEW", "USER_QUERY"}:
+        result = _profile_answer(context, conversation_intent, payload.message)
     else:
-        plan_started = time.perf_counter()
-        plan, days, state = get_current_plan_context(db, user.id, selected_plan_date=payload.selected_plan_date, question=payload.message)
-        plan_ms = round((time.perf_counter() - plan_started) * 1000, 2)
-        metrics["db_ms"] = round(float(metrics["db_ms"]) + plan_ms, 2)
-        logger.info("plan_context_loaded request_id=%s plan_ms=%s selected_plan_date=%s resolved_plan_date=%s context_source=%s", request_id, plan_ms, payload.selected_plan_date, state["day"].date, state["context_source"])
-        try:
-            if conversation_intent == "contextual_followup":
-                result = _contextual_answer(db.get(UserMemory, user.id), plan, days, payload.message, state)
-            elif conversation_intent in {"plan_question", "progress_question"}:
-                result = _last_completed_exercise_answer(state) if asks_last_completed_exercise(payload.message) else _plan_question_answer(state, payload.message, progress=conversation_intent == "progress_question")
-            else:
-                result = await _agent_answer(question=payload.message, intent=agent_intent, day=state["day"], days=days, history=history, request_id=request_id, metrics=metrics)
-        except LLMUnavailable as exc:
-            error_id = str(uuid.uuid4())
-            logger.warning("llm_unavailable request_id=%s error_id=%s user_id=%s reason=%s", request_id, error_id, user.id, type(exc).__name__)
-            raise HTTPException(status_code=503, detail={"message": "No pude completar la respuesta en este momento. Intenta nuevamente.", "error_id": error_id}) from exc
+        if not plan or not days:
+            result = ChatAnswer(
+                "Tu perfil está disponible, pero aún no tienes un plan activo. Genera uno desde **Mi perfil** para consultar rutina, comidas y progreso.",
+                "profile",
+                {"conversation_intent": effective_intent, "vertex_called": False},
+            )
+            state = None
+        else:
+            plan_started = time.perf_counter()
+            plan, days, state = get_current_plan_context(db, user.id, selected_plan_date=payload.selected_plan_date, question=payload.message)
+            plan_ms = round((time.perf_counter() - plan_started) * 1000, 2)
+            metrics["db_ms"] = round(float(metrics["db_ms"]) + plan_ms, 2)
+            logger.info("plan_context_loaded request_id=%s plan_ms=%s selected_plan_date=%s resolved_plan_date=%s context_source=%s", request_id, plan_ms, payload.selected_plan_date, state["day"].date, state["context_source"])
+        if plan and days and state is not None:
+            try:
+                if conversation_intent in {"PLAN_AUDIT", "PLAN_CONSTRAINT_CONFLICT"}:
+                    result = _plan_audit_answer(context, conversation_intent, payload.message)
+                elif conversation_intent in {"PLAN_SUMMARY", "ROUTINE_SUMMARY", "NUTRITION_SUMMARY", "PROGRESS_SUMMARY"}:
+                    result = _summary_answer(conversation_intent, context, state)
+                elif conversation_intent == "contextual_followup":
+                    result = _contextual_answer(context.memory, plan, days, payload.message, state)
+                elif conversation_intent in {"plan_question", "progress_question"}:
+                    result = _last_completed_exercise_answer(state) if asks_last_completed_exercise(payload.message) else _plan_question_answer(state, payload.message, progress=conversation_intent == "progress_question")
+                else:
+                    result = await _agent_answer(question=payload.message, intent=agent_intent, day=state["day"], days=days, profile=profile_input(context.profile), memory=context.memory, history=history, request_id=request_id, metrics=metrics)
+            except LLMUnavailable as exc:
+                error_id = str(uuid.uuid4())
+                logger.warning("llm_unavailable request_id=%s error_id=%s user_id=%s reason=%s", request_id, error_id, user.id, type(exc).__name__)
+                raise HTTPException(status_code=503, detail={"message": "No pude completar la respuesta en este momento. Intenta nuevamente.", "error_id": error_id}) from exc
     # Input-guardrail fallbacks are controlled, deterministic text. Do not
     # replace their specific domain explanation with the generic output-policy
     # fallback; generated/allowed answers still pass through output validation.
     answer = result.message if not decision.allow else validate_output(result.message, intent=decision.intent)
     source = "output_guardrail" if answer != result.message else result.source
-    db.add(ChatMessage(session_id=session.id, role="assistant", content=answer, intent=decision.intent))
+    db.add(ChatMessage(session_id=session.id, role="assistant", content=answer, intent=effective_intent))
     if decision.allow:
         _remember(db, user_id=user.id, plan=plan, result=result)
     commit_started = time.perf_counter()
@@ -712,12 +933,12 @@ async def chat(payload: ChatPayload, request: Request, user: Annotated[User, Dep
     total_ms = round((time.perf_counter() - request.state.request_started_at) * 1000, 2)
     logger.info(
         "chat_completed request_id=%s user_id=%s session_id=%s intent=%s source=%s generated_chars=%s api_chars=%s router_ms=%s db_ms=%s rag_ms=%s vertex_ms=%s vertex_called=%s total_ms=%s exercise_intent=%s routine_found=%s technical_guide_found=%s",
-        request_id, user.id, session.id, conversation_intent or agent_intent, source,
+        request_id, user.id, session.id, effective_intent, source,
         len(result.message), len(answer),
         metrics["router_ms"], metrics["db_ms"], metrics["rag_ms"], metrics["vertex_ms"], metrics["vertex_called"], total_ms,
         result.metadata.get("exercise_intent"), result.metadata.get("routine_found"), result.metadata.get("technical_guide_found"),
     )
-    return {"request_id": request_id, "session_id": session.id, "intent": conversation_intent or agent_intent, "source": source, "metadata": result.metadata, "message": answer, "response": answer, "message_length": len(answer)}
+    return {"request_id": request_id, "session_id": session.id, "intent": effective_intent, "source": source, "metadata": result.metadata, "message": answer, "response": answer, "message_length": len(answer)}
 
 
 @app.get("/api/v1/chat/{session_id}")

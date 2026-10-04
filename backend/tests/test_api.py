@@ -20,6 +20,12 @@ def profile():
     return {"language": "es", "sex": "male", "age": 32, "height_cm": 167, "weight_kg": 72, "workout_hours_per_week": 4, "goal": "general_fitness", "dietary_restrictions": [], "available_days": [0, 2, 4]}
 
 
+def observed_profile(**changes):
+    value = {"language": "es", "sex": "male", "age": 50, "height_cm": 190, "weight_kg": 70, "workout_hours_per_week": 18, "goal": "general_fitness", "dietary_restrictions": ["sin lactosa"], "available_days": [0, 1, 2, 3, 6]}
+    value.update(changes)
+    return value
+
+
 def test_auth_isolation_plan_and_blocked_chat():
     with TestClient(app) as client:
         first, second = signup(client, "fitlife-user-a"), signup(client, "fitlife-user-b")
@@ -84,6 +90,109 @@ def test_recipe_requests_resolve_the_exact_plan_meal_and_current_meal_type():
             response = client.post("/api/v1/chat", headers=headers, json={"message": question})
             assert response.status_code == 200, response.text
             assert expected["name"] in response.json()["message"]
+
+
+def test_profile_context_is_authoritative_and_lactose_plan_is_validated(monkeypatch):
+    async def llm_must_not_run(**_):
+        raise AssertionError("profile and audit queries must remain deterministic")
+
+    monkeypatch.setattr("app.main.llm.answer", llm_must_not_run)
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-profile-context")
+        saved = client.put("/api/v1/profile", headers=headers, json=observed_profile())
+        assert saved.status_code == 200
+        assert saved.json()["dietary_restrictions"] == ["lactose_free"]
+        plan = client.post("/api/v1/plan/generate", headers=headers)
+        assert plan.status_code == 201, plan.text
+        assert all(
+            not meal["dietary_properties"]["contains_lactose"]
+            for day in plan.json()["days"] for meal in day["nutrition"]["meals"]
+        )
+
+        restrictions = client.post("/api/v1/chat", headers=headers, json={"message": "¿Qué restricciones alimentarias tengo?"})
+        assert restrictions.json()["intent"] == "PROFILE_QUERY"
+        assert "Sin lactosa" in restrictions.json()["message"]
+        review = client.post("/api/v1/chat", headers=headers, json={"message": "Revisa mi perfil"})
+        assert review.json()["intent"] == "PROFILE_REVIEW"
+        assert "18 horas" in review.json()["message"]
+        assert "no tengo acceso" not in review.json()["message"].casefold()
+        audit = client.post("/api/v1/chat", headers=headers, json={"message": "¿Mi plan respeta que soy sin lactosa?"})
+        assert audit.json()["source"] == "profile_audit"
+        assert audit.json()["metadata"]["plan_valid"] is True
+        conflict = client.post("/api/v1/chat", headers=headers, json={"message": "Me estás poniendo en el desayuno un producto con lácteo"})
+        assert "Sin lactosa" in conflict.json()["message"]
+        assert "sin lácteos" in conflict.json()["message"]
+        assert "no tengo acceso" not in conflict.json()["message"].casefold()
+
+        nutrition = client.post("/api/v1/chat", headers=headers, json={"message": "¿Cómo preparo mi desayuno?"})
+        assert nutrition.status_code == 200
+        assert nutrition.json()["metadata"]["dietary_restrictions"] == ["lactose_free"]
+
+
+def test_profile_change_marks_plan_for_review_and_invalid_generation_is_not_persisted(monkeypatch):
+    with TestClient(app) as client:
+        headers = signup(client, "fitlife-profile-review")
+        assert client.put("/api/v1/profile", headers=headers, json=observed_profile(dietary_restrictions=[])).status_code == 200
+        original = client.post("/api/v1/plan/generate", headers=headers).json()
+        changed = client.put("/api/v1/profile", headers=headers, json=observed_profile(dietary_restrictions=["lactose_free"]))
+        assert changed.json()["plan_needs_regeneration"] is True
+        assert client.get("/api/v1/plan", headers=headers).json()["needs_review"] is True
+
+        regenerated = client.post("/api/v1/plan/generate", headers=headers)
+        assert regenerated.status_code == 201
+        assert regenerated.json()["needs_review"] is False
+        valid_id = regenerated.json()["id"]
+        unchanged = client.put("/api/v1/profile", headers=headers, json=observed_profile(dietary_restrictions=["lactose_free"]))
+        assert unchanged.json()["plan_needs_regeneration"] is False
+        assert client.get("/api/v1/plan", headers=headers).json()["needs_review"] is False
+
+        monkeypatch.setattr("app.main.validate_plan_against_profile", lambda *_: {"valid": False, "violations": [{"type": "dietary_restriction"}]})
+        rejected = client.post("/api/v1/plan/generate", headers=headers)
+        assert rejected.status_code == 422
+        assert client.get("/api/v1/plan", headers=headers).json()["id"] == valid_id
+
+
+def test_complete_fitlife_conversation_and_profile_isolation(monkeypatch):
+    async def llm_must_not_run(**_):
+        raise AssertionError("the tested conversation is deterministic or RAG-backed")
+
+    monkeypatch.setattr("app.main.llm.answer", llm_must_not_run)
+    with TestClient(app) as client:
+        first = signup(client, "fitlife-conversation-a")
+        second = signup(client, "fitlife-conversation-b")
+        assert client.put("/api/v1/profile", headers=first, json=observed_profile()).status_code == 200
+        assert client.put("/api/v1/profile", headers=second, json=observed_profile(dietary_restrictions=[])).status_code == 200
+        plan = client.post("/api/v1/plan/generate", headers=first).json()
+        assert client.post("/api/v1/plan/generate", headers=second).status_code == 201
+        selected = next(day for day in plan["days"] if day["workout"]["exercises"])
+
+        session_id = None
+        turns = [
+            ("Hola", "SMALL_TALK", {}),
+            ("Dame un resumen de mi perfil", "PROFILE_SUMMARY", {}),
+            ("¿Y de mi plan?", "PLAN_SUMMARY", {}),
+            ("¿Cómo voy?", "PROGRESS_SUMMARY", {}),
+            ("¿Qué ejercicio tengo este día?", "plan_question", {"selected_plan_date": selected["date"]}),
+            ("¿Cómo hago ese ejercicio?", "EXERCISE_INSTRUCTION", {}),
+            ("Gracias", "SMALL_TALK", {}),
+        ]
+        technique = None
+        for question, expected_intent, extra in turns:
+            response = client.post("/api/v1/chat", headers=first, json={"message": question, "session_id": session_id, **extra})
+            assert response.status_code == 200, response.text
+            assert response.json()["intent"] == expected_intent
+            assert response.json()["intent"] != "OFF_TOPIC"
+            session_id = response.json()["session_id"]
+            if question == "¿Cómo hago ese ejercicio?":
+                technique = response.json()
+        assert technique is not None
+        assert technique["source"] in {"routine_rag", "routine"}
+        assert selected["workout"]["exercises"][0]["name"] in technique["message"]
+
+        first_profile = client.post("/api/v1/chat", headers=first, json={"message": "¿Qué restricciones alimentarias tengo?"})
+        second_profile = client.post("/api/v1/chat", headers=second, json={"message": "¿Qué restricciones alimentarias tengo?"})
+        assert "Sin lactosa" in first_profile.json()["message"]
+        assert "ninguna restricción" in second_profile.json()["message"].casefold()
 
 
 def test_selected_calendar_day_is_authoritative_for_deterministic_plan_questions(monkeypatch):
@@ -209,7 +318,7 @@ def test_chat_returns_stable_contract_and_combines_real_plan_with_technical_exer
 
         routine = client.post("/api/v1/chat", headers=headers, json={"message": "Como se hace elejercicio de flexion inclinada"})
         assert routine.status_code == 200, routine.text
-        assert routine.json()["intent"] == "FITNESS"
+        assert routine.json()["intent"] == "EXERCISE_INSTRUCTION"
         assert routine.json()["source"] == "routine_rag"
         assert "Flexión inclinada" in routine.json()["message"]
         assert "Apoya las manos en una superficie estable" in routine.json()["message"]
@@ -250,7 +359,7 @@ def test_chat_returns_stable_contract_and_combines_real_plan_with_technical_exer
 
         unknown = client.post("/api/v1/chat", headers=headers, json={"message": "¿Cómo hago el salto de pokemon?"})
         assert unknown.status_code == 200
-        assert unknown.json()["intent"] == "FITNESS"
+        assert unknown.json()["intent"] == "EXERCISE_INSTRUCTION"
         assert unknown.json()["source"] == "not_found"
         assert "salto de pokemon" in unknown.json()["message"]
         assert "No quiero inventarte" in unknown.json()["message"]
